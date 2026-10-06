@@ -19,7 +19,7 @@ echo "IP Público detectado: $IP_ATUAL"
 echo "ID gerado: $ID_GERADO"
 echo "Monitorando Firebase: $FIREBASE_URL..."
 
-# Diretório base exclusivo da sandbox (.sandbox)
+# Diretório base exclusivo da sandbox (.sandbox) no Termux
 SANDBOX_DIR="$HOME/.sandbox"
 CURRENT_SANDBOX_DIR="$SANDBOX_DIR"
 mkdir -p "$CURRENT_SANDBOX_DIR"
@@ -35,7 +35,7 @@ if [ ! -d "$PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu" ]; then
     proot-distro install ubuntu >/dev/null 2>&1
 fi
 
-# Função unificada para garantir que todas as dependências padrão estejam sempre instaladas e atualizadas no Ubuntu
+# Função unificada para garantir dependências como root dentro do Ubuntu do proot-distro
 garantir_dependencias() {
     proot-distro login ubuntu --shared-tmp -- bash -c "
     mkdir -p /root/sandbox
@@ -49,7 +49,7 @@ garantir_dependencias() {
     " >/dev/null 2>&1
 }
 
-echo "Verificando e configurando dependências padrão no Ubuntu..."
+echo "Verificando e configurando dependências padrão no Ubuntu (Root)..."
 garantir_dependencias
 
 while true; do
@@ -88,7 +88,7 @@ EOF
         PAYLOAD_EXP="{\"id\":\"$ID_GERADO\",\"expiration\":$VAL_MS}"
         curl -s -X PATCH -d "$PAYLOAD_EXP" "$FIREBASE_URL" > /dev/null
     elif [ "$CURRENT_MS" -ge "$VAL_MS" ]; then
-        echo "Tempo de expiração atingido! Resetando a sandbox..."
+        echo "Tempo de expiração atingido! Resetando a sandbox (Root)..."
         rm -rf "$SANDBOX_DIR"/*
         mkdir -p "$SANDBOX_DIR"
         proot-distro login ubuntu --shared-tmp -- rm -rf /root/sandbox/* >/dev/null 2>&1
@@ -161,16 +161,16 @@ EOF
         PAYLOAD_COR="{\"id\":\"$ID_GERADO\",\"cor\":null,\"color\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}"
         curl -s -X PATCH -d "$PAYLOAD_COR" "$FIREBASE_URL" > /dev/null
 
-    # 2. Execução via Botão Ubuntu do Painel Web dentro da .sandbox
+    # 2. Execução via Botão Ubuntu do Painel Web (Rodando como Root na Sandbox)
     elif [ ! -z "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
-        echo "Executando ação do Botão Ubuntu na .sandbox: $CMD_UBUNTU"
+        echo "Executando ação do Botão Ubuntu (Root) na sandbox: $CMD_UBUNTU"
         
         garantir_dependencias
         RESPOSTA=""
         if [ "$CMD_UBUNTU" = "1" ] || [ "$CMD_UBUNTU" = "create" ]; then
-            RESPOSTA="[.sandbox] Ambiente Ubuntu ativo com Node.js, npm, git e dependências padrão!"
+            RESPOSTA="[.sandbox] Ambiente Ubuntu (Root) ativo com Node.js, npm, git e dependências padrão!"
         elif [ "$CMD_UBUNTU" = "2" ] || [ "$CMD_UBUNTU" = "restart" ]; then
-            RESPOSTA="[.sandbox] Ambiente Ubuntu reiniciado e dependências verificadas."
+            RESPOSTA="[.sandbox] Ambiente Ubuntu reiniciado e dependências verificadas como Root."
         elif [ "$CMD_UBUNTU" = "4" ] || [ "$CMD_UBUNTU" = "clean" ]; then
             rm -rf "$SANDBOX_DIR"/*
             mkdir -p "$SANDBOX_DIR"
@@ -188,23 +188,22 @@ EOF
         PAYLOAD="{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}"
         curl -s -X PATCH -d "$PAYLOAD" "$FIREBASE_URL" > /dev/null
 
-    # 3. Execução de comandos gerais convertendo pipes remotos para arquivos temporários seguros no proot
+    # 3. Execução de comandos gerais (Rodando estritamente como Root dentro do Ubuntu)
     elif [ ! -z "$CMD" ] && [ "$CMD" != "null" ]; then
-        echo "Executando comando no Ubuntu proot-distro:"
+        echo "Executando comando geral como Root no Ubuntu proot-distro:"
         echo "$CMD"
         
         garantir_dependencias
 
-        PAYLOAD_INICIAL="{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":\"[⏳] Processando comando no Ubuntu...\",\"data_hora\":\"$DATA_HORA_ATUAL\"}"
+        PAYLOAD_INICIAL="{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":\"[⏳] Processando comando como Root no Ubuntu...\",\"data_hora\":\"$DATA_HORA_ATUAL\"}"
         curl -s -X PATCH -d "$PAYLOAD_INICIAL" "$FIREBASE_URL" > /dev/null
 
-        # Converte a execução para salvar e rodar via arquivo temporário se usar bash <(curl ...)
         RESPOSTA=$(proot-distro login ubuntu --shared-tmp -- bash -c "
         mkdir -p /root/sandbox
         cd /root/sandbox
         export HOME=/root
         
-        # Se o comando contiver 'bash <(curl', traduz para arquivo temporário para evitar erro de /dev/fd
+        # Converte pipes remotos para script temporário se usar bash <(curl ...)
         if echo '$CMD' | grep -q 'bash <(curl'; then
             URL_EXTRAIDA=\$(echo '$CMD' | grep -oE 'https?://[^ \)]+')
             curl -s \"\$URL_EXTRAIDA\" -o /tmp/script_exec.sh
