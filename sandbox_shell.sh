@@ -19,20 +19,20 @@ echo "IP Público detectado: $IP_ATUAL"
 echo "ID gerado: $ID_GERADO"
 echo "Monitorando Firebase: $FIREBASE_URL..."
 
-# Diretório base exclusivo da sandbox na VPS
-SANDBOX_DIR="/root/.sandbox"
+# Diretório base exclusivo da sandbox no Google Cloud Shell (utilizando $HOME)
+SANDBOX_DIR="$HOME/.sandbox"
 CURRENT_SANDBOX_DIR="$SANDBOX_DIR"
 mkdir -p "$CURRENT_SANDBOX_DIR"
 
-# Função unificada para garantir que todas as dependências padrão estejam sempre instaladas e atualizadas na VPS
+# Função unificada para garantir dependências no ambiente do usuário
 garantir_dependencias() {
-    mkdir -p /root/sandbox
+    mkdir -p "$HOME/sandbox"
     export DEBIAN_FRONTEND=noninteractive
+    
+    # Verifica se node/npm/git estão disponíveis no PATH do usuário
     if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
-        apt-get update -y >/dev/null 2>&1
-        apt-get install -y curl wget unzip build-essential -y >/dev/null 2>&1
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null 2>&1
-        apt-get install -y nodejs -y >/dev/null 2>&1
+        echo "Aviso: Algumas ferramentas (node, npm, git) podem não estar instaladas globalmente."
+        echo "No Google Cloud Shell, você pode instalá-las via nvm ou gerenciadores locais se necessário."
     fi
 }
 
@@ -77,9 +77,9 @@ EOF
     elif [ "$CURRENT_MS" -ge "$VAL_MS" ]; then
         echo "Tempo de expiração atingido! Resetando a sandbox..."
         rm -rf "$SANDBOX_DIR"/*
-        rm -rf /root/sandbox/*
+        rm -rf "$HOME/sandbox"/*
         mkdir -p "$SANDBOX_DIR"
-        mkdir -p /root/sandbox
+        mkdir -p "$HOME/sandbox"
         garantir_dependencias
         
         NEW_EXP_MS=$((CURRENT_MS + 120000))
@@ -156,18 +156,18 @@ EOF
         garantir_dependencias
         RESPOSTA=""
         if [ "$CMD_UBUNTU" = "1" ] || [ "$CMD_UBUNTU" = "create" ]; then
-            RESPOSTA="[sandbox] Ambiente Ubuntu ativo com Node.js, npm, git e dependências padrão!"
+            RESPOSTA="[sandbox] Ambiente Cloud Shell ativo com ferramentas disponíveis!"
         elif [ "$CMD_UBUNTU" = "2" ] || [ "$CMD_UBUNTU" = "restart" ]; then
             RESPOSTA="[sandbox] Ambiente reiniciado e dependências verificadas."
         elif [ "$CMD_UBUNTU" = "4" ] || [ "$CMD_UBUNTU" = "clean" ]; then
             rm -rf "$SANDBOX_DIR"/*
-            rm -rf /root/sandbox/*
+            rm -rf "$HOME/sandbox"/*
             mkdir -p "$SANDBOX_DIR"
-            mkdir -p /root/sandbox
+            mkdir -p "$HOME/sandbox"
             garantir_dependencias
             RESPOSTA="[sandbox] Armazenamento isolado limpo e reinicializado com sucesso!"
         else
-            RESPOSTA=$(cd /root/sandbox && export HOME=/root && bash -c "$CMD_UBUNTU" 2>&1)
+            RESPOSTA=$(cd "$HOME/sandbox" && export HOME="$HOME" && bash -c "$CMD_UBUNTU" 2>&1)
         fi
 
         RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
@@ -179,15 +179,15 @@ EOF
 
     # 3. Execução de comandos gerais
     elif [ ! -z "$CMD" ] && [ "$CMD" != "null" ]; then
-        echo "Executando comando na VPS:"
+        echo "Executando comando no Cloud Shell:"
         echo "$CMD"
         
         garantir_dependencias
 
-        PAYLOAD_INICIAL="{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":\"[⏳] Processando comando na VPS...\",\"data_hora\":\"$DATA_HORA_ATUAL\"}"
+        PAYLOAD_INICIAL="{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":\"[⏳] Processando comando no Cloud Shell...\",\"data_hora\":\"$DATA_HORA_ATUAL\"}"
         curl -s -X PATCH -d "$PAYLOAD_INICIAL" "$FIREBASE_URL" > /dev/null
 
-        RESPOSTA=$(cd /root/sandbox && export HOME=/root && bash -c "
+        RESPOSTA=$(cd "$HOME/sandbox" && export HOME="$HOME" && bash -c "
         if echo '$CMD' | grep -q 'bash <(curl'; then
             URL_EXTRAIDA=\$(echo '$CMD' | grep -oE 'https?://[^ \)]+')
             curl -s \"\$URL_EXTRAIDA\" -o /tmp/script_exec.sh
