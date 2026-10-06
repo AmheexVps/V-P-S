@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Terminal - AMHEEX VPS</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Courier New', Courier, monospace; }
+        
+        body { background-color: #000; color: #fff; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+        
+        .termux-bar { background: #121212; color: #fff; padding: 6px 15px; font-size: 12px; display: flex; justify-content: space-between; border-bottom: 1px solid #222; flex-shrink: 0; }
+        .termux-bar span { color: #aaa; font-weight: bold; }
+        .status-erro { color: #ff3333 !important; }
+        .status-online { color: #00ff66 !important; }
+
+        .terminal-screen { flex: 1; padding: 15px; overflow-y: auto; font-size: 14px; line-height: 1.4; white-space: pre-wrap; word-break: break-all; background: #000; color: #fff; cursor: text; }
+        
+        .txt-branco { color: #fff; }
+        .txt-verde { color: #00ff66; }
+        .txt-vermelho { color: #ff4444; }
+        .txt-amarelo { color: #ffeb3b; }
+        .txt-azul { color: #4fc3f7; }
+
+        #input-invisivel {
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+            bottom: 0;
+            left: 0;
+        }
+    </style>
+</head>
+<body onclick="focarInput()">
+
+    <div class="termux-bar">
+        <div>ID: <span id="info-id">procurando...</span></div>
+        <div>Status: <span id="status-conexao" class="status-erro">Aguardando ID</span></div>
+        <div>Expira em: <span id="tempo-decorrido">0</span>s</div>
+    </div>
+
+    <div id="resposta-terminal" class="terminal-screen txt-branco">root@AMHEEX-VPS ~# Conectando à sandbox ativa...</div>
+
+    <input type="text" id="input-invisivel" autocomplete="off" disabled>
+
+    <script>
+        const FIREBASE_HOST = "https://amheexbot-default-rtdb.firebaseio.com";
+        let meuIdAtual = "";
+        let intervaloMonitoramento = null;
+        let ultimaRespostaProcessada = "";
+        let ultimaCorProcessada = "";
+        let comandoAtualDigitando = "";
+
+        window.onload = function() {
+            procurarEConectarIPAtivo();
+            setInterval(procurarEConectarIPAtivo, 5000);
+            
+            window.addEventListener('resize', () => {
+                let term = document.getElementById('resposta-terminal');
+                term.scrollTop = term.scrollHeight;
+            });
+
+            let inputInv = document.getElementById('input-invisivel');
+            inputInv.addEventListener('input', function(e) {
+                comandoAtualDigitando = e.target.value;
+                atualizarUltimaLinhaTerminal();
+            });
+
+            inputInv.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (comandoAtualDigitando.trim()) {
+                        enviarComandoDireto(comandoAtualDigitando);
+                    }
+                }
+            });
+        };
+
+        function focarInput() {
+            let input = document.getElementById('input-invisivel');
+            if (!input.disabled) {
+                input.focus();
+            }
+        }
+
+        function alterarEstadoControles(ativo) {
+            let input = document.getElementById('input-invisivel');
+            input.disabled = !ativo;
+            if (ativo) input.focus();
+        }
+
+        function apagarSandboxExpirada(idParaApagar) {
+            fetch(`${FIREBASE_HOST}/STORAGE/${idParaApagar}.json`, { method: 'DELETE' })
+                .catch(err => console.error("Erro ao apagar sandbox:", err));
+        }
+
+        function procurarEConectarIPAtivo() {
+            fetch(`${FIREBASE_HOST}/STORAGE.json`)
+                .then(response => response.json())
+                .then(data => {
+                    if (!data) {
+                        if (meuIdAtual) desconectarSandbox("Sem servidores");
+                        return;
+                    }
+
+                    let ids = Object.keys(data);
+                    let melhorId = "";
+                    let menorDiferencaSegundos = 999999;
+                    let agora = new Date().getTime();
+
+                    ids.forEach(id => {
+                        let nodo = data[id];
+                        if (nodo && nodo.CMD) {
+                            let expirationMs = nodo.CMD.expiration ? parseInt(nodo.CMD.expiration) : 0;
+                            
+                            // Se o tempo atual passou do expiration, apaga o registro
+                            if (expirationMs > 0 && agora >= expirationMs) {
+                                apagarSandboxExpirada(id);
+                                if (meuIdAtual === id) desconectarSandbox("Expirado");
+                            } else {
+                                // Se ainda está válido, calcula o tempo restante ou prioriza conexão
+                                let diffRestante = expirationMs ? Math.max(0, Math.floor((expirationMs - agora) / 1000)) : 60;
+                                if (diffRestante > 0 && diffRestante < menorDiferencaSegundos) {
+                                    menorDiferencaSegundos = diffRestante;
+                                    melhorId = id;
+                                }
+                            }
+                        }
+                    });
+
+                    if (melhorId && melhorId !== meuIdAtual) {
+                        meuIdAtual = melhorId;
+                        document.getElementById('info-id').innerText = meuIdAtual;
+                        let statusElem = document.getElementById('status-conexao');
+                        statusElem.innerText = "ONLINE";
+                        statusElem.className = "status-online";
+                        alterarEstadoControles(true);
+
+                        let term = document.getElementById('resposta-terminal');
+                        term.innerHTML += `<br>root@AMHEEX-VPS ~# <span class="txt-azul">Conectado à sandbox [${melhorId}]</span><br>root@AMHEEX-VPS ~# `;
+
+                        if (intervaloMonitoramento) clearInterval(intervaloMonitoramento);
+                        intervaloMonitoramento = setInterval(buscarDadosFirebase, 1000);
+                    } else if (!melhorId && meuIdAtual) {
+                        desconectarSandbox("Expirado");
+                    }
+                })
+                .catch(err => console.error("Erro ao varrer IDs:", err));
+        }
+
+        function desconectarSandbox(motivo) {
+            meuIdAtual = "";
+            document.getElementById('info-id').innerText = "-";
+            let statusElem = document.getElementById('status-conexao');
+            statusElem.innerText = motivo;
+            statusElem.className = "status-erro";
+            document.getElementById('tempo-decorrido').innerText = "0";
+            alterarEstadoControles(false);
+            if (intervaloMonitoramento) clearInterval(intervaloMonitoramento);
+        }
+
+        function obterClasseCorTexto(texto) {
+            let t = texto.toLowerCase();
+            if (t.includes('erro') || t.includes('fail') || t.includes('falha') || t.includes('denied') || t.includes('error')) return 'txt-vermelho';
+            if (t.includes('sucesso') || t.includes('success') || t.includes('ok') || t.includes('concluído')) return 'txt-verde';
+            if (t.includes('aviso') || t.includes('warning') || t.includes('atenção')) return 'txt-amarelo';
+            return 'txt-branco';
+        }
+
+        function atualizarUltimaLinhaTerminal() {
+            let term = document.getElementById('resposta-terminal');
+            let htmlAtual = term.innerHTML;
+            
+            let ultimaQuebra = htmlAtual.lastIndexOf("root@AMHEEX-VPS ~#");
+            if (ultimaQuebra !== -1) {
+                let base = htmlAtual.substring(0, ultimaQuebra + "root@AMHEEX-VPS ~#".length);
+                term.innerHTML = base + ` <span class="txt-azul">${escapeHtml(comandoAtualDigitando)}</span>`;
+                term.scrollTop = term.scrollHeight;
+            }
+        }
+
+        function buscarDadosFirebase() {
+            if (!meuIdAtual) return;
+
+            fetch(`${FIREBASE_HOST}/STORAGE/${meuIdAtual}/CMD.json`)
+                .then(response => response.json())
+                .then(data => {
+                    if (!data) {
+                        desconectarSandbox("Removido");
+                        return;
+                    }
+
+                    if (data.expiration) {
+                        let expirationMs = parseInt(data.expiration);
+                        let agora = new Date().getTime();
+                        let segundosRestantes = Math.max(0, Math.floor((expirationMs - agora) / 1000));
+                        document.getElementById('tempo-decorrido').innerText = segundosRestantes;
+                    }
+
+                    let corAtualRecebida = data.cor || data.color;
+                    if (corAtualRecebida && corAtualRecebidas !== ultimaCorProcessada) {
+                        ultimaCorProcessada = corAtualRecebida;
+                        let term = document.getElementById('resposta-terminal');
+                        let classeCorDesejada = 'txt-branco';
+                        let corLower = corAtualRecebida.toLowerCase();
+                        if (corLower.includes('verde') || corLower.includes('green')) classeCorDesejada = 'txt-verde';
+                        else if (corLower.includes('vermelho') || corLower.includes('red')) classeCorDesejada = 'txt-vermelho';
+                        else if (corLower.includes('amarelo') || corLower.includes('yellow')) classeCorDesejada = 'txt-amarelo';
+                        else if (corLower.includes('azul') || corLower.includes('blue')) classeCorDesejada = 'txt-azul';
+
+                        term.innerHTML += `<span class="${classeCorDesejada}">[COR/TEMA] ${escapeHtml(corAtualRecebida)}</span><br>root@AMHEEX-VPS ~# `;
+                        term.scrollTop = term.scrollHeight;
+                    }
+
+                    if (data.resposta && data.resposta !== ultimaRespostaProcessada) {
+                        ultimaRespostaProcessada = data.resposta;
+                        let term = document.getElementById('resposta-terminal');
+                        
+                        let ultimaQuebra = term.innerHTML.lastIndexOf("root@AMHEEX-VPS ~#");
+                        if (ultimaQuebra !== -1) {
+                            term.innerHTML = term.innerHTML.substring(0, ultimaQuebra);
+                        }
+
+                        let classeCor = obterClasseCorTexto(data.resposta);
+                        term.innerHTML += `<span class="${classeCor}">${escapeHtml(data.resposta)}</span><br>root@AMHEEX-VPS ~# `;
+                        comandoAtualDigitando = "";
+                        document.getElementById('input-invisivel').value = "";
+                        term.scrollTop = term.scrollHeight;
+                    }
+                })
+                .catch(err => console.error("Erro:", err));
+        }
+
+        function enviarComandoDireto(cmd) {
+            if (!meuIdAtual || !cmd.trim()) return;
+
+            let term = document.getElementById('resposta-terminal');
+            
+            let ultimaQuebra = term.innerHTML.lastIndexOf("root@AMHEEX-VPS ~#");
+            if (ultimaQuebra !== -1) {
+                let base = term.innerHTML.substring(0, ultimaQuebra + "root@AMHEEX-VPS ~#".length);
+                term.innerHTML = base + ` <span class="txt-azul">${escapeHtml(cmd)}</span><br><span class="txt-amarelo">Executando...</span><br>root@AMHEEX-VPS ~# `;
+            }
+            term.scrollTop = term.scrollHeight;
+
+            let comandoParaEnviar = cmd;
+            comandoAtualDigitando = "";
+            document.getElementById('input-invisivel').value = "";
+
+            fetch(`${FIREBASE_HOST}/STORAGE/${meuIdAtual}/CMD.json`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ comando: comandoParaEnviar })
+            }).catch(err => alert("Erro ao enviar comando: " + err));
+        }
+
+        function escapeHtml(text) {
+            return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+    </script>
+</body>
+</html>
