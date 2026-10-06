@@ -1,78 +1,114 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set +H
 
-# Obtém estritamente o IP público da conexão e remove os pontos
-IP_ATUAL=$(curl -s https://api.ipify.org || curl -s https://icanhazip.com || curl -s https://ifconfig.me)
-if [ -z "$IP_ATUAL" ]; then
-    IP_ATUAL="127.0.0.1"
-fi
-IP_SEM_PONTOS=$(echo "$IP_ATUAL" | tr -d '.')
+# ==========================================
+# 🌟 CONFIGURAÇÕES & CORES DO PAINEL
+# ==========================================
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m'
 
-# Define o ID dinâmico combinando "ID" + IP sem pontos
-ID_GERADO="ID${IP_SEM_PONTOS}"
-
-# Define a base do servidor e monta a URL dinâmica
-SERVIDOR="https://amheexbot-default-rtdb.firebaseio.com"
-FIREBASE_URL="${SERVIDOR}/STORAGE/${ID_GERADO}/CMD.json"
-
-echo "IP Público detectado: $IP_ATUAL"
-echo "ID gerado: $ID_GERADO"
-echo "Monitorando Firebase: $FIREBASE_URL..."
-
-# Diretório base exclusivo da sandbox (.sandbox) no Termux
 SANDBOX_DIR="$HOME/.sandbox"
-CURRENT_SANDBOX_DIR="$SANDBOX_DIR"
-mkdir -p "$CURRENT_SANDBOX_DIR"
+VM_WORKSPACE="/root/sandbox"
+mkdir -p "$SANDBOX_DIR"
 
-# Garante que o proot-distro e o Ubuntu estão instalados para a sandbox
+# Identificação Firebase
+IP_ATUAL=$(curl -s https://api.ipify.org || curl -s https://icanhazip.com || curl -s https://ifconfig.me)
+[ -z "$IP_ATUAL" ] && IP_ATUAL="127.0.0.1"
+IP_SEM_PONTOS=$(echo "$IP_ATUAL" | tr -d '.')
+ID_GERADO="ID${IP_SEM_PONTOS}"
+FIREBASE_URL="https://amheexbot-default-rtdb.firebaseio.com/STORAGE/${ID_GERADO}/CMD.json"
+
+# Garante proot-distro e Ubuntu
 if ! command -v proot-distro >/dev/null 2>&1; then
-    echo "Instalando proot-distro no Termux..."
     pkg install -y proot-distro >/dev/null 2>&1
 fi
-
 if [ ! -d "$PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu" ]; then
-    echo "Instalando distribuição Ubuntu via proot-distro..."
     proot-distro install ubuntu >/dev/null 2>&1
 fi
 
-# Função unificada para garantir dependências como root dentro do Ubuntu do proot-distro
 garantir_dependencias() {
     proot-distro login ubuntu --shared-tmp -- bash -c "
     mkdir -p /root/sandbox
     export DEBIAN_FRONTEND=noninteractive
-    if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
+    if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
         apt-get update -y >/dev/null 2>&1
-        apt-get install -y curl git wget unzip build-essential -y >/dev/null 2>&1
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash - >/dev/null 2>&1
-        apt-get install -y nodejs -y >/dev/null 2>&1
+        apt-get install -y curl git wget unzip build-essential nodejs -y >/dev/null 2>&1
     fi
     " >/dev/null 2>&1
 }
 
-echo "Verificando e configurando dependências padrão no Ubuntu (Root)..."
 garantir_dependencias
 
-while true; do
-    # Obtém a data e hora atual (formato: AAAA-MM-DD HH:MM:SS)
-    DATA_HORA_ATUAL=$(date '+%Y-%m-%d %H:%M:%S')
+# ==========================================
+# TELA INICIAL (DASHBOARD VISUAL)
+# ==========================================
+clear
+echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
+echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / PROOT-DISTRO SANDBOX${BLUE}            │${NC}"
+echo -e "${BLUE}     │                                                  │${NC}"
+echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}UBUNTU ROOT${BLUE}     ${YELLOW}FIREBASE SYNC${BLUE}   │${NC}"
+echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
+echo ""
+echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
+echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
+echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
+echo ""
+echo -e "${GREEN}     [✓] Painel inicial carregado! Monitorando comandos em background...${NC}"
+echo -e "${YELLOW}     Pressione Ctrl+C a qualquer momento para sair.${NC}"
+echo ""
+echo -e "${BLUE}     ─────────────────────────────────────────────────────${NC}"
 
-    # Faz o download dos dados atuais do Firebase para checagem e envio
+# ==========================================
+# LOOP DE MONITORAMENTO EM BACKGROUND (DAEMON)
+# ==========================================
+while true; do
+    DATA_HORA_ATUAL=$(date '+%Y-%m-%d %H:%M:%S')
     DADOS=$(curl -s "$FIREBASE_URL")
 
-    # Verifica e gerencia o tempo de expiração em milissegundos
+    # Verifica o estado da chave 'action' no Firebase
+    ACTION_VAL=$(python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    act = data.get("action")
+    if act is False or str(act).lower() == "false":
+        print("FALSE")
+    else:
+        print("TRUE")
+except:
+    print("TRUE")
+' <<EOF
+$DADOS
+EOF
+)
+
+    # Se a chave action for FALSE, desativa o script do Termux e apaga o Ubuntu
+    if [ "$ACTION_VAL" = "FALSE" ]; then
+        echo -e "\n${RED}[!] Chave 'action' alterada para FALSE. Desativando script e apagando ambiente...${NC}"
+        proot-distro remove ubuntu >/dev/null 2>&1
+        rm -rf "$SANDBOX_DIR"
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"resposta\":\"[❌] Script desativado e Ubuntu apagado via Firebase!\",\"action\":false}" "$FIREBASE_URL" > /dev/null
+        echo -e "${RED}[X] Script encerrado com sucesso.${NC}"
+        exit 0
+    fi
+
+    # Gerenciamento de Expiração
     EXPIRATION_MS=$(python3 -c '
 import json, sys, time
 try:
     data = json.loads(sys.stdin.read())
     exp = data.get("expiration")
     now_ms = int(time.time() * 1000)
-    
     if exp is None or str(exp).strip() == "" or str(exp).lower() == "null":
-        exp_val = now_ms + 120000
-        print(f"CREATE:{exp_val}")
+        print(f"CREATE:{now_ms + 120000}")
     else:
         print(f"EXIST:{int(exp)}")
-except Exception as e:
+except:
     now_ms = int(time.time() * 1000)
     print(f"CREATE:{now_ms + 120000}")
 ' <<EOF
@@ -85,33 +121,25 @@ EOF
     CURRENT_MS=$(python3 -c 'import time; print(int(time.time() * 1000))')
 
     if [ "$ACTION" = "CREATE" ]; then
-        PAYLOAD_EXP="{\"id\":\"$ID_GERADO\",\"expiration\":$VAL_MS}"
-        curl -s -X PATCH -d "$PAYLOAD_EXP" "$FIREBASE_URL" > /dev/null
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"expiration\":$VAL_MS}" "$FIREBASE_URL" > /dev/null
     elif [ "$CURRENT_MS" -ge "$VAL_MS" ]; then
-        echo "Tempo de expiração atingido! Resetando a sandbox (Root)..."
         rm -rf "$SANDBOX_DIR"/*
         mkdir -p "$SANDBOX_DIR"
         proot-distro login ubuntu --shared-tmp -- rm -rf /root/sandbox/* >/dev/null 2>&1
         garantir_dependencias
-        
         NEW_EXP_MS=$((CURRENT_MS + 120000))
-        PAYLOAD_RESET="{\"id\":\"$ID_GERADO\",\"expiration\":$NEW_EXP_MS,\"resposta\":\".sandbox expirada e resetada com sucesso!\"}"
-        curl -s -X PATCH -d "$PAYLOAD_RESET" "$FIREBASE_URL" > /dev/null
-        
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"expiration\":$NEW_EXP_MS,\"resposta\":\".sandbox expirada e resetada!\"}" "$FIREBASE_URL" > /dev/null
         DADOS=$(curl -s "$FIREBASE_URL")
     fi
 
-    PAYLOAD_STATUS="{\"id\":\"$ID_GERADO\",\"data_hora\":\"$DATA_HORA_ATUAL\"}"
-    curl -s -X PATCH -d "$PAYLOAD_STATUS" "$FIREBASE_URL" > /dev/null
+    curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
     
     CMD=$(python3 -c '
 import json, sys
 try:
     data = json.loads(sys.stdin.read())
     val = data.get("comando", "")
-    if val:
-        val = val.replace("\\n", "\n")
-    print(val if val is not None else "")
+    print(val.replace("\\n", "\n") if val else "")
 except:
     print("")
 ' <<EOF
@@ -124,9 +152,7 @@ import json, sys
 try:
     data = json.loads(sys.stdin.read())
     val = data.get("cmd_ubuntu", "")
-    if val:
-        val = val.replace("\\n", "\n")
-    print(val if val is not None else "")
+    print(val.replace("\\n", "\n") if val else "")
 except:
     print("")
 ' <<EOF
@@ -134,49 +160,19 @@ $DADOS
 EOF
 )
 
-    COR_CMD=$(python3 -c '
-import json, sys
-try:
-    data = json.loads(sys.stdin.read())
-    val = data.get("cor", "") or data.get("color", "")
-    print(val if val is not None else "")
-except:
-    print("")
-' <<EOF
-$DADOS
-EOF
-)
-
-    # 1. Captura e processa alteração de cor/tema vinda do Firebase
-    if [ ! -z "$COR_CMD" ] && [ "$COR_CMD" != "null" ]; then
-        echo "Alteração de cor/tema recebida do Firebase: $COR_CMD"
-        echo "$COR_CMD" > "$SANDBOX_DIR/.current_color"
-
-        RESPOSTA="Cor/Tema alterado com sucesso para: $COR_CMD"
-        RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
-$RESPOSTA
-EOF
-)
-
-        PAYLOAD_COR="{\"id\":\"$ID_GERADO\",\"cor\":null,\"color\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}"
-        curl -s -X PATCH -d "$PAYLOAD_COR" "$FIREBASE_URL" > /dev/null
-
-    # 2. Execução via Botão Ubuntu do Painel Web (Rodando como Root na Sandbox)
-    elif [ ! -z "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
-        echo "Executando ação do Botão Ubuntu (Root) na sandbox: $CMD_UBUNTU"
-        
-        garantir_dependencias
+    # Execução Botão Ubuntu (Root)
+    if [ ! -z "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
+        echo -e "\n${CYAN}[CMD WEB] Executando Botão Ubuntu: $CMD_UBUNTU${NC}"
         RESPOSTA=""
         if [ "$CMD_UBUNTU" = "1" ] || [ "$CMD_UBUNTU" = "create" ]; then
-            RESPOSTA="[.sandbox] Ambiente Ubuntu (Root) ativo com Node.js, npm, git e dependências padrão!"
+            RESPOSTA="[.sandbox] Ambiente Root ativo com dependências!"
         elif [ "$CMD_UBUNTU" = "2" ] || [ "$CMD_UBUNTU" = "restart" ]; then
-            RESPOSTA="[.sandbox] Ambiente Ubuntu reiniciado e dependências verificadas como Root."
+            RESPOSTA="[.sandbox] Ambiente reiniciado."
         elif [ "$CMD_UBUNTU" = "4" ] || [ "$CMD_UBUNTU" = "clean" ]; then
-            rm -rf "$SANDBOX_DIR"/*
-            mkdir -p "$SANDBOX_DIR"
+            rm -rf "$SANDBOX_DIR"/* && mkdir -p "$SANDBOX_DIR"
             proot-distro login ubuntu --shared-tmp -- rm -rf /root/sandbox/* >/dev/null 2>&1
             garantir_dependencias
-            RESPOSTA="[.sandbox] Armazenamento isolado limpo e reinicializado com sucesso!"
+            RESPOSTA="[.sandbox] Limpo com sucesso!"
         else
             RESPOSTA=$(proot-distro login ubuntu --shared-tmp -- bash -c "cd /root/sandbox && export HOME=/root && $CMD_UBUNTU" 2>&1 | grep -v "proot warning:")
         fi
@@ -185,25 +181,15 @@ EOF
 $RESPOSTA
 EOF
 )
-        PAYLOAD="{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}"
-        curl -s -X PATCH -d "$PAYLOAD" "$FIREBASE_URL" > /dev/null
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
 
-    # 3. Execução de comandos gerais (Rodando estritamente como Root dentro do Ubuntu)
+    # Execução Comando Geral (Root)
     elif [ ! -z "$CMD" ] && [ "$CMD" != "null" ]; then
-        echo "Executando comando geral como Root no Ubuntu proot-distro:"
-        echo "$CMD"
-        
-        garantir_dependencias
-
-        PAYLOAD_INICIAL="{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":\"[⏳] Processando comando como Root no Ubuntu...\",\"data_hora\":\"$DATA_HORA_ATUAL\"}"
-        curl -s -X PATCH -d "$PAYLOAD_INICIAL" "$FIREBASE_URL" > /dev/null
+        echo -e "\n${CYAN}[CMD WEB] Executando Comando Geral: $CMD${NC}"
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":\"[⏳] Processando...\",\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
 
         RESPOSTA=$(proot-distro login ubuntu --shared-tmp -- bash -c "
-        mkdir -p /root/sandbox
-        cd /root/sandbox
-        export HOME=/root
-        
-        # Converte pipes remotos para script temporário se usar bash <(curl ...)
+        mkdir -p /root/sandbox && cd /root/sandbox && export HOME=/root
         if echo '$CMD' | grep -q 'bash <(curl'; then
             URL_EXTRAIDA=\$(echo '$CMD' | grep -oE 'https?://[^ \)]+')
             curl -s \"\$URL_EXTRAIDA\" -o /tmp/script_exec.sh
@@ -218,12 +204,8 @@ EOF
 $RESPOSTA
 EOF
 )
-
-        PAYLOAD="{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}"
-        curl -s -X PATCH -d "$PAYLOAD" "$FIREBASE_URL" > /dev/null
-
-        echo "Resposta do comando enviada com sucesso!"
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
     fi
 
-    sleep 0.90
+    sleep 1
 done
