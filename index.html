@@ -9,10 +9,15 @@
         
         body { background-color: #000; color: #fff; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
         
-        .termux-bar { background: #121212; color: #fff; padding: 6px 15px; font-size: 12px; display: flex; justify-content: space-between; border-bottom: 1px solid #222; flex-shrink: 0; }
+        .termux-bar { background: #121212; color: #fff; padding: 6px 15px; font-size: 11px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #222; flex-shrink: 0; gap: 5px; flex-wrap: wrap; }
         .termux-bar span { color: #aaa; font-weight: bold; }
         .status-erro { color: #ff3333 !important; }
         .status-online { color: #00ff66 !important; }
+
+        .action-toggle-container { display: flex; align-items: center; gap: 5px; }
+        .btn-action { background: #222; border: 1px solid #444; color: #fff; padding: 2px 6px; font-size: 10px; cursor: pointer; border-radius: 3px; font-family: monospace; }
+        .btn-action.active-true { background: #00aa55; border-color: #00ff66; color: #000; font-weight: bold; }
+        .btn-action.active-false { background: #aa0000; border-color: #ff3333; color: #fff; font-weight: bold; }
 
         .terminal-screen { flex: 1; padding: 15px; overflow-y: auto; font-size: 14px; line-height: 1.4; white-space: pre-wrap; word-break: break-all; background: #000; color: #fff; cursor: text; }
         
@@ -36,7 +41,10 @@
     <div class="termux-bar">
         <div>ID: <span id="info-id">procurando...</span></div>
         <div>Status: <span id="status-conexao" class="status-erro">Aguardando ID</span></div>
-        <div>Expira em: <span id="tempo-decorrido">0</span>s</div>
+        <div class="action-toggle-container">
+            Action: <button id="btnActionToggle" class="btn-action active-true" onclick="alternarActionFirebase()">TRUE</button>
+        </div>
+        <div>Expira: <span id="tempo-decorrido">0</span>s</div>
     </div>
 
     <div id="resposta-terminal" class="terminal-screen txt-branco">root@AMHEEX-VPS ~# Conectando à sandbox ativa...</div>
@@ -50,6 +58,7 @@
         let ultimaRespostaProcessada = "";
         let ultimaCorProcessada = "";
         let comandoAtualDigitando = "";
+        let estadoActionAtual = true;
 
         window.onload = function() {
             procurarEConectarIPAtivo();
@@ -94,6 +103,29 @@
                 .catch(err => console.error("Erro ao apagar sandbox:", err));
         }
 
+        function alternarActionFirebase() {
+            if (!meuIdAtual) return;
+            estadoActionAtual = !estadoActionAtual;
+            atualizarBotaoActionVisual();
+
+            fetch(`${FIREBASE_HOST}/STORAGE/${meuIdAtual}/CMD.json`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: estadoActionAtual })
+            }).catch(err => console.error("Erro ao alterar action:", err));
+        }
+
+        function atualizarBotaoActionVisual() {
+            let btn = document.getElementById('btnActionToggle');
+            if (estadoActionAtual) {
+                btn.innerText = "TRUE";
+                btn.className = "btn-action active-true";
+            } else {
+                btn.innerText = "FALSE";
+                btn.className = "btn-action active-false";
+            }
+        }
+
         function procurarEConectarIPAtivo() {
             fetch(`${FIREBASE_HOST}/STORAGE.json`)
                 .then(response => response.json())
@@ -112,13 +144,18 @@
                         let nodo = data[id];
                         if (nodo && nodo.CMD) {
                             let expirationMs = nodo.CMD.expiration ? parseInt(nodo.CMD.expiration) : 0;
+                            let actVal = nodo.CMD.action;
                             
-                            // Se o tempo atual passou do expiration, apaga o registro
+                            // Se action for explicitamente false ou expirado, gerencia
+                            if ((actVal === false || String(actVal).toLowerCase() === "false") && meuIdAtual === id) {
+                                desconectarSandbox("Desativado (False)");
+                                return;
+                            }
+
                             if (expirationMs > 0 && agora >= expirationMs) {
                                 apagarSandboxExpirada(id);
                                 if (meuIdAtual === id) desconectarSandbox("Expirado");
                             } else {
-                                // Se ainda está válido, calcula o tempo restante ou prioriza conexão
                                 let diffRestante = expirationMs ? Math.max(0, Math.floor((expirationMs - agora) / 1000)) : 60;
                                 if (diffRestante > 0 && diffRestante < menorDiferencaSegundos) {
                                     menorDiferencaSegundos = diffRestante;
@@ -142,7 +179,7 @@
                         if (intervaloMonitoramento) clearInterval(intervaloMonitoramento);
                         intervaloMonitoramento = setInterval(buscarDadosFirebase, 1000);
                     } else if (!melhorId && meuIdAtual) {
-                        desconectarSandbox("Expirado");
+                        desconectarSandbox("Expirado/Off");
                     }
                 })
                 .catch(err => console.error("Erro ao varrer IDs:", err));
@@ -190,6 +227,12 @@
                         return;
                     }
 
+                    // Verifica se o action mudou para false remotamente
+                    if (data.action === false || String(data.action).toLowerCase() === "false") {
+                        desconectarSandbox("Desativado");
+                        return;
+                    }
+
                     if (data.expiration) {
                         let expirationMs = parseInt(data.expiration);
                         let agora = new Date().getTime();
@@ -198,7 +241,7 @@
                     }
 
                     let corAtualRecebida = data.cor || data.color;
-                    if (corAtualRecebida && corAtualRecebidas !== ultimaCorProcessada) {
+                    if (corAtualRecebida && corAtualRecebida !== ultimaCorProcessada) {
                         ultimaCorProcessada = corAtualRecebida;
                         let term = document.getElementById('resposta-terminal');
                         let classeCorDesejada = 'txt-branco';
