@@ -100,7 +100,9 @@ EOF
 )
 
     if [ ! -z "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
-        echo "Executando ação do Botão: $CMD_UBUNTU"
+        echo "========================================="
+        echo "Ação recebida no Botão Ubuntu: $CMD_UBUNTU"
+        echo "========================================="
         garantir_dependencias
         RESPOSTA=""
         
@@ -118,6 +120,9 @@ EOF
             RESPOSTA=$(bash -c "$CMD_UBUNTU" 2>&1)
         fi
 
+        echo "Saída gerada:"
+        echo "$RESPOSTA"
+
         RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
 $RESPOSTA
 EOF
@@ -125,13 +130,18 @@ EOF
         curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
 
     elif [ ! -z "$CMD" ] && [ "$CMD" != "null" ]; then
-        echo "Executando comando: $CMD"
+        echo "========================================="
+        echo "Comando geral recebido: $CMD"
+        echo "========================================="
         garantir_dependencias
         
         curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":\"[⏳] Processando comando...\",\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
 
         cd "$SANDBOX_DIR"
         RESPOSTA=$(bash -c "$CMD" 2>&1)
+
+        echo "Saída gerada:"
+        echo "$RESPOSTA"
 
         RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
 $RESPOSTA
