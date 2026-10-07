@@ -143,19 +143,10 @@ EOF
         exit 0
     fi
 
-    # 2. Se o tempo de expiração esgotar: limpa a raiz, renova o expiration por mais 120s e CONTINUA rodando
+    # 2. Se o tempo de expiração esgotar: apenas avisa e encerra ou aguarda atualização externa (sem renovar automaticamente)
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
-        echo -e "\n${YELLOW}[!] Tempo de expiração esgotado. Limpando workspace e renovando timer...${NC}"
-        
-        # Apaga e recria a raiz limpa
-        rm -rf "$VM_WORKSPACE"
-        mkdir -p "$VM_WORKSPACE"
-        
-        # Novo expiration com +120 segundos (120000 ms)
-        NOVO_EXP=$(( TIMESTAMP_MS + 120000 ))
-        
-        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"[!] Expiração atingida. Workspace limpo e tempo renovado.\",\"expiration\":$NOVO_EXP,\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
-        
+        echo -e "\n${YELLOW}[!] Tempo de expiração esgotado no Firebase. Aguardando renovação externa...${NC}"
+        sleep 2
         continue
     fi
 
