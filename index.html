@@ -19,7 +19,7 @@
         .btn-action.active-true { background: #00aa55; border-color: #00ff66; color: #000; font-weight: bold; }
         .btn-action.active-false { background: #aa0000; border-color: #ff3333; color: #fff; font-weight: bold; }
 
-        .terminal-screen { flex: 1; padding: 15px; overflow-y: auto; font-size: 14px; line-height: 1.4; white-space: pre-wrap; word-break: break-all; background: #000; color: #fff; cursor: text; }
+        .terminal-screen { flex: 1; padding: 15px; overflow-y: auto; font-size: 14px; line-height: 1.4; white-space: pre-wrap; word-break: break-all; background: #000; color: #fff; cursor: text; -webkit-overflow-scrolling: touch; }
         
         .txt-branco { color: #fff; }
         .txt-verde { color: #00ff66; }
@@ -33,6 +33,8 @@
             pointer-events: none;
             bottom: 0;
             left: 0;
+            height: 0;
+            width: 0;
         }
     </style>
 </head>
@@ -74,6 +76,15 @@
                 let actStr = actionDaUrl.toLowerCase().trim();
                 estadoActionAtual = (actStr === 'true' || actStr === '1' || actStr === 'yes');
                 atualizarBotaoActionVisual();
+            }
+
+            // Correção de redimensionamento dinâmico para o teclado virtual do celular (evita quebrar a visão do CMD)
+            if (window.visualViewport) {
+                window.visualViewport.addEventListener('resize', () => {
+                    document.body.style.height = window.visualViewport.height + 'px';
+                    let term = document.getElementById('resposta-terminal');
+                    term.scrollTop = term.scrollHeight;
+                });
             }
 
             // Se houver ID na URL, ativa o modo manual imediatamente
@@ -136,13 +147,17 @@
             let term = document.getElementById('resposta-terminal');
             term.innerHTML = `root@AMHEEX-VPS ~# <span class="txt-azul">${mensagemConexao} [${id}]</span><br>root@AMHEEX-VPS ~# `;
 
-            // Monta o objeto de sincronização garantindo o envio do action atual
-            let dadosAtualizacao = { action: estadoActionAtual };
+            // Sincronização com dados de data, hora e milissegundos precisos na chave expiration
+            let agoraMs = new Date().getTime();
+            let dadosAtualizacao = { 
+                action: estadoActionAtual,
+                data_hora: agoraMs
+            };
             
             if (segundosExpiracaoUrl) {
                 let segInt = parseInt(segundosExpiracaoUrl);
                 if (!isNaN(segInt)) {
-                    dadosAtualizacao.expiration = new Date().getTime() + (segInt * 1000);
+                    dadosAtualizacao.expiration = agoraMs + (segInt * 1000);
                 }
             }
 
@@ -162,10 +177,11 @@
             estadoActionAtual = !estadoActionAtual;
             atualizarBotaoActionVisual();
 
+            let agoraMs = new Date().getTime();
             fetch(`${FIREBASE_HOST}/STORAGE/${meuIdAtual}/CMD.json`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: estadoActionAtual })
+                body: JSON.stringify({ action: estadoActionAtual, data_hora: agoraMs })
             }).catch(err => console.error("Erro ao alterar action:", err));
         }
 
@@ -223,11 +239,10 @@
                     if (melhorId && melhorId !== meuIdAtual) {
                         conectarESincronizarID(melhorId, "Conectado automaticamente à sandbox");
                     } else if (melhorId && melhorId === meuIdAtual) {
-                        // Garante que se já estiver conectado, periodicamente reafirma o estado do action atual caso tenha ficado ausente
                         fetch(`${FIREBASE_HOST}/STORAGE/${melhorId}/CMD.json`, {
                             method: 'PATCH',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action: estadoActionAtual })
+                            body: JSON.stringify({ action: estadoActionAtual, data_hora: agora })
                         }).catch(err => {});
                     } else if (!melhorId && meuIdAtual) {
                         desconectarSandbox("Expirado/Off");
@@ -292,6 +307,12 @@
                         let agora = new Date().getTime();
                         let segundosRestantes = Math.max(0, Math.floor((expirationMs - agora) / 1000));
                         document.getElementById('tempo-decorrido').innerText = segundosRestantes;
+                        
+                        // Se expirou localmente em tempo real
+                        if (agora >= expirationMs && !modoManualUrl) {
+                            desconectarSandbox("Expirado");
+                            return;
+                        }
                     }
 
                     let corAtualRecebida = data.cor || data.color;
@@ -344,10 +365,11 @@
             comandoAtualDigitando = "";
             document.getElementById('input-invisivel').value = "";
 
+            let agoraMs = new Date().getTime();
             fetch(`${FIREBASE_HOST}/STORAGE/${meuIdAtual}/CMD.json`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ comando: comandoParaEnviar })
+                body: JSON.stringify({ comando: comandoParaEnviar, data_hora: agoraMs })
             }).catch(err => alert("Erro ao enviar comando: " + err));
         }
 
