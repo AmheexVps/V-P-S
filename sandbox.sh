@@ -27,7 +27,7 @@ IP_ATUAL=$(curl -s https://api.ipify.org || curl -s https://icanhazip.com || cur
 
 IP_SEM_PONTOS=$(echo "$IP_ATUAL" | tr -d '.')
 ID_GERADO="ID${IP_SEM_PONTOS}"
-FIREBASE_URL="https://amheexbot-default-rtdb.firebaseio.com/STORAGE/${ID_GERADO}/CMD.json"
+FIREBASE_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${ID_GERADO}/CMD.json"
 
 # ==========================================
 # INSTALAÇÃO DE DEPENDÊNCIAS
