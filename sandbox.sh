@@ -39,10 +39,42 @@ if ! command -v node >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; th
 fi
 
 # ==========================================
-# STATUS INICIAL (TRUE)
+# VERIFICAÇÃO E STATUS INICIAL (FIREBASE)
 # ==========================================
 DATA_HORA_ATUAL=$(date '+%Y-%m-%d %H:%M:%S')
-curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
+DADOS_INICIAIS=$(curl -s "$FIREBASE_URL")
+
+# Verifica se a chave 'action' e 'tempo' já existem no Firebase
+CONFIG_EXISTE=$(python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    if isinstance(data, dict):
+        has_action = "action" in data
+        has_tempo = "tempo" in data
+        print(f"{has_action},{has_tempo}")
+    else:
+        print("False,False")
+except:
+    print("False,False")
+' <<EOF
+$DADOS_INICIAIS
+EOF
+)
+
+IFS=',' read -r HAS_ACTION HAS_TEMPO <<< "$CONFIG_EXISTE"
+
+# Configura valores iniciais caso faltem no Firebase
+PATCH_DATA="{\"id\":\"$ID_GERADO\",\"data_hora\":\"$DATA_HORA_ATUAL\""
+if [ "$HAS_ACTION" != "True" ]; then
+    PATCH_DATA="${PATCH_DATA},\"action\":true"
+fi
+if [ "$HAS_TEMPO" != "True" ]; then
+    PATCH_DATA="${PATCH_DATA},\"tempo\":120"
+fi
+PATCH_DATA="${PATCH_DATA}}"
+
+curl -s -X PATCH -d "$PATCH_DATA" "$FIREBASE_URL" > /dev/null
 
 # ==========================================
 # INTERFACE VISUAL
@@ -68,36 +100,57 @@ while true; do
     DATA_HORA_ATUAL=$(date '+%Y-%m-%d %H:%M:%S')
     DADOS=$(curl -s "$FIREBASE_URL")
 
-    # Verifica o valor da ação no Firebase
-    ACTION_VAL=$(python3 -c '
+    # Extrai dados do Firebase (action e tempo)
+    PARSED_VALS=$(python3 -c '
 import json, sys
 try:
     data = json.loads(sys.stdin.read())
-    act = data.get("action")
-    if act is False or str(act).lower() == "false":
-        print("FALSE")
+    if not isinstance(data, dict):
+        print("TRUE,120")
     else:
-        print("TRUE")
+        act = data.get("action", True)
+        if act is False or str(act).lower() == "false":
+            act_str = "FALSE"
+        else:
+            act_str = "TRUE"
+        
+        tmp = data.get("tempo", 120)
+        try:
+            tmp = int(tmp)
+        except:
+            tmp = 120
+        
+        print(f"{act_str},{tmp}")
 except:
-    print("TRUE")
+    print("TRUE,120")
 ' <<EOF
 $DADOS
 EOF
 )
 
-    # Se action for FALSE, limpa tudo e encerra
-    if [ "$ACTION_VAL" = "FALSE" ]; then
-        echo -e "\n${RED}[!] Script desativado via Firebase. Removendo ambiente...${NC}"
+    IFS=',' read -r ACTION_VAL TEMPO_VAL <<< "$PARSED_VALS"
+
+    # Se action for FALSE ou o tempo expirar ( <= 0 ), limpa a raiz e encerra
+    if [ "$ACTION_VAL" = "FALSE" ] || [ "$TEMPO_VAL" -le 0 ]; then
+        if [ "$ACTION_VAL" = "FALSE" ]; then
+            echo -e "\n${RED}[!] Script desativado via Firebase (action=false). Removendo workspace...${NC}"
+            RESP_FINAL="[!] Ambiente desativado via action=false."
+        else
+            echo -e "\n${RED}[!] Tempo de sessão esgotado ($TEMPO_VAL seg). Removendo workspace...${NC}"
+            RESP_FINAL="[!] Tempo expirado. Limpando ambiente."
+        fi
         
-        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"[!] Ambiente desativado e apagado com sucesso.\",\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"$RESP_FINAL\",\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
         
+        # Apaga raiz do sandbox onde está o arquivo/workspace
         rm -rf "$VM_WORKSPACE"
         
         echo -e "${GREEN}[✓] Workspace limpo. Encerrando.${NC}"
         exit 0
     fi
 
-    # Mantém o status ativo
+    # Decrementa o tempo localmente e atualiza no Firebase a cada ciclo se necessário, ou mantém ativo
+    # Mantém o status ativo atualizando o timestamp
     curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
     
     # Extrai comando genérico
