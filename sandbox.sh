@@ -25,6 +25,10 @@ if ! command -v node >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; th
     sudo apt-get install -y curl git wget unzip build-essential nodejs python3 -y >/dev/null 2>&1
 fi
 
+# Define o ambiente como rodando (true) no Firebase antes de iniciar tudo
+DATA_HORA_ATUAL=$(date '+%Y-%m-%d %H:%M:%S')
+curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
+
 clear
 echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
 echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}          │${NC}"
@@ -60,11 +64,18 @@ EOF
 )
 
     if [ "$ACTION_VAL" = "FALSE" ]; then
-        echo -e "\n${RED}[!] Script desativado via Firebase.${NC}"
+        echo -e "\n${RED}[!] Script desativado via Firebase. Removendo ambiente...${NC}"
+        # Atualiza o status para refletir que está desligando e limpa os comandos pendentes
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"[!] Ambiente desativado e apagado com sucesso.\",\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
+        
+        # Apaga o diretório do ubuntu/workspace completo
+        rm -rf "$VM_WORKSPACE"
+        
+        echo -e "${GREEN}[✓] Workspace limpo. Encerrando.${NC}"
         exit 0
     fi
 
-    curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
+    curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
     
     CMD=$(python3 -c '
 import json, sys
@@ -99,18 +110,18 @@ EOF
 $RESPOSTA
 EOF
 )
-        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
 
     elif [ ! -z "$CMD" ] && [ "$CMD" != "null" ]; then
         echo -e "\n${CYAN}[CMD] Executando: $CMD${NC}"
-        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":\"[⏳] Processando...\",\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"comando\":null,\"resposta\":\"[⏳] Processando...\",\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
 
         RESPOSTA=$(cd "$VM_WORKSPACE" && bash -c "$CMD" 2>&1)
         RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
 $RESPOSTA
 EOF
 )
-        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"comando\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
     fi
 
     sleep 1
