@@ -42,7 +42,7 @@ fi
 # STATUS INICIAL E EXPIRAÇÃO (EM MILISSEGUNDOS)
 # ==========================================
 TIMESTAMP_MS=$(python3 -c 'import time; print(int(time.time() * 1000))')
-EXPIRATION_DEFAULT=$(( TIMESTAMP_MS + (120 * 1000) ))
+EXPIRATION_DEFAULT=$(( TIMESTAMP_MS + (30 * 1000) ))
 
 DADOS_INICIAIS=$(curl -s "$FIREBASE_URL")
 
@@ -90,7 +90,7 @@ echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
 echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
 echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
 echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos no Google Shell...${NC}"
+echo -e "${GREEN}     [✓] Monitorando comandos no Google Shell (Timeout: 30s)...${NC}"
 echo ""
 
 # ==========================================
@@ -106,7 +106,7 @@ try:
     data = json.loads(sys.stdin.read())
     current_ms = int(time.time() * 1000)
     if not isinstance(data, dict):
-        print(f"TRUE,{current_ms + 120000}")
+        print(f"TRUE,{current_ms + 30000}")
     else:
         act = data.get("action", True)
         if act is False or str(act).lower() == "false":
@@ -114,16 +114,16 @@ try:
         else:
             act_str = "TRUE"
         
-        exp = data.get("expiration", current_ms + 120000)
+        exp = data.get("expiration", current_ms + 30000)
         try:
             exp = int(exp)
         except:
-            exp = current_ms + 120000
+            exp = current_ms + 30000
         
         print(f"{act_str},{exp}")
 except:
     current_ms = int(time.time() * 1000)
-    print(f"TRUE,{current_ms + 120000}")
+    print(f"TRUE,{current_ms + 30000}")
 ' <<EOF
 $DADOS
 EOF
@@ -143,10 +143,19 @@ EOF
         exit 0
     fi
 
-    # 2. Se o tempo de expiração esgotar: apenas avisa e encerra ou aguarda atualização externa (sem renovar automaticamente)
+    # 2. Se o tempo de expiração esgotar: limpa a raiz, renova o expiration por mais 30s e CONTINUA rodando
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
-        echo -e "\n${YELLOW}[!] Tempo de expiração esgotado no Firebase. Aguardando renovação externa...${NC}"
-        sleep 2
+        echo -e "\n${YELLOW}[!] Tempo de expiração esgotado. Limpando workspace e renovando timer...${NC}"
+        
+        # Apaga e recria a raiz limpa
+        rm -rf "$VM_WORKSPACE"
+        mkdir -p "$VM_WORKSPACE"
+        
+        # Novo expiration com +30 segundos (30000 ms)
+        NOVO_EXP=$(( TIMESTAMP_MS + 30000 ))
+        
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"[!] Expiração atingida. Workspace limpo e tempo renovado.\",\"expiration\":$NOVO_EXP,\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
+        
         continue
     fi
 
