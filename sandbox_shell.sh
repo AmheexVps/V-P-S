@@ -1,65 +1,105 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set +H
 
-# Obtém estritamente o IP público da conexão e remove os pontos
-IP_ATUAL=$(curl -s https://api.ipify.org || curl -s https://icanhazip.com || curl -s https://ifconfig.me)
-if [ -z "$IP_ATUAL" ]; then
-    IP_ATUAL="127.0.0.1"
-fi
-IP_SEM_PONTOS=$(echo "$IP_ATUAL" | tr -d '.')
+# ==========================================
+# 🌟 CONFIGURAÇÕES & CORES DO PAINEL (GOOGLE CLOUD SHELL)
+# ==========================================
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+NC='\033[0m'
 
-# Define o ID dinâmico combinando "ID" + IP sem pontos
-ID_GERADO="ID${IP_SEM_PONTOS}"
-
-# Define a base do servidor e monta a URL dinâmica
-SERVIDOR="https://amheexbot-default-rtdb.firebaseio.com"
-FIREBASE_URL="${SERVIDOR}/STORAGE/${ID_GERADO}/CMD.json"
-
-echo "IP Público detectado: $IP_ATUAL"
-echo "ID gerado: $ID_GERADO"
-echo "Monitorando Firebase: $FIREBASE_URL..."
-
-# Diretório base exclusivo da sandbox no Google Cloud Shell (utilizando $HOME)
 SANDBOX_DIR="$HOME/.sandbox"
-CURRENT_SANDBOX_DIR="$SANDBOX_DIR"
-mkdir -p "$CURRENT_SANDBOX_DIR"
+VM_WORKSPACE="/root/sandbox"
+SESSION_DIR_FILE="$SANDBOX_DIR/.current_dir"
+mkdir -p "$SANDBOX_DIR" "$VM_WORKSPACE"
+[ ! -f "$SESSION_DIR_FILE" ] && echo "$VM_WORKSPACE" > "$SESSION_DIR_FILE"
 
-# Função unificada para garantir dependências no ambiente do usuário
+# Identificação Firebase baseada no IP Público do Cloud Shell
+IP_ATUAL=$(curl -s https://api.ipify.org || curl -s https://icanhazip.com || curl -s https://ifconfig.me)
+[ -z "$IP_ATUAL" ] && IP_ATUAL="127.0.0.1"
+IP_SEM_PONTOS=$(echo "$IP_ATUAL" | tr -d '.')
+ID_GERADO="ID${IP_SEM_PONTOS}"
+FIREBASE_URL="https://amheexbot-default-rtdb.firebaseio.com/STORAGE/${ID_GERADO}/CMD.json"
+
+# Garante dependências básicas no ambiente do Google Cloud Shell
 garantir_dependencias() {
-    mkdir -p "$HOME/sandbox"
     export DEBIAN_FRONTEND=noninteractive
-    
-    # Verifica se node/npm/git estão disponíveis no PATH do usuário
-    if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
-        echo "Aviso: Algumas ferramentas (node, npm, git) podem não estar instaladas globalmente."
-        echo "No Google Cloud Shell, você pode instalá-las via nvm ou gerenciadores locais se necessário."
+    if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+        apt-get update -y >/dev/null 2>&1
+        apt-get install -y curl git wget unzip build-essential nodejs -y >/dev/null 2>&1
     fi
 }
 
-echo "Verificando e configurando dependências padrão..."
 garantir_dependencias
 
-while true; do
-    # Obtém a data e hora atual (formato: AAAA-MM-DD HH:MM:SS)
-    DATA_HORA_ATUAL=$(date '+%Y-%m-%d %H:%M:%S')
+# ==========================================
+# TELA INICIAL (DASHBOARD VISUAL)
+# ==========================================
+clear
+echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
+echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE CLOUD SHELL SANDBOX${BLUE}      │${NC}"
+echo -e "${BLUE}     │                                                  │${NC}"
+echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}NATIVE ROOT${BLUE}     ${YELLOW}FIREBASE SYNC${BLUE}   │${NC}"
+echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
+echo ""
+echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
+echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
+echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
+echo ""
+echo -e "${GREEN}     [✓] Painel inicial carregado! Monitorando comandos em background...${NC}"
+echo -e "${YELLOW}     Pressione Ctrl+C a qualquer momento para sair.${NC}"
+echo ""
+echo -e "${BLUE}     ─────────────────────────────────────────────────────${NC}"
 
-    # Faz o download dos dados atuais do Firebase para checagem e envio
+# ==========================================
+# LOOP DE MONITORAMENTO EM BACKGROUND (DAEMON)
+# ==========================================
+while true; do
+    DATA_HORA_ATUAL=$(date '+%Y-%m-%d %H:%M:%S')
     DADOS=$(curl -s "$FIREBASE_URL")
 
-    # Verifica e gerencia o tempo de expiração em milissegundos
+    # Verifica o estado da chave 'action' no Firebase
+    ACTION_VAL=$(python3 -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    act = data.get("action")
+    if act is False or str(act).lower() == "false":
+        print("FALSE")
+    else:
+        print("TRUE")
+except:
+    print("TRUE")
+' <<EOF
+$DADOS
+EOF
+)
+
+    # Se a chave action for FALSE, limpa e encerra o script
+    if [ "$ACTION_VAL" = "FALSE" ]; then
+        echo -e "\n${RED}[!] Chave 'action' alterada para FALSE. Desativando script e limpando ambiente...${NC}"
+        rm -rf "$SANDBOX_DIR" "$VM_WORKSPACE"
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"resposta\":\"[❌] Script desativado via Firebase!\",\"action\":false}" "$FIREBASE_URL" > /dev/null
+        echo -e "${RED}[X] Script encerrado com sucesso.${NC}"
+        exit 0
+    fi
+
+    # Gerenciamento de Expiração
     EXPIRATION_MS=$(python3 -c '
 import json, sys, time
 try:
     data = json.loads(sys.stdin.read())
     exp = data.get("expiration")
     now_ms = int(time.time() * 1000)
-    
     if exp is None or str(exp).strip() == "" or str(exp).lower() == "null":
-        exp_val = now_ms + 120000
-        print(f"CREATE:{exp_val}")
+        print(f"CREATE:{now_ms + 120000}")
     else:
         print(f"EXIST:{int(exp)}")
-except Exception as e:
+except:
     now_ms = int(time.time() * 1000)
     print(f"CREATE:{now_ms + 120000}")
 ' <<EOF
@@ -72,34 +112,25 @@ EOF
     CURRENT_MS=$(python3 -c 'import time; print(int(time.time() * 1000))')
 
     if [ "$ACTION" = "CREATE" ]; then
-        PAYLOAD_EXP="{\"id\":\"$ID_GERADO\",\"expiration\":$VAL_MS}"
-        curl -s -X PATCH -d "$PAYLOAD_EXP" "$FIREBASE_URL" > /dev/null
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"expiration\":$VAL_MS}" "$FIREBASE_URL" > /dev/null
     elif [ "$CURRENT_MS" -ge "$VAL_MS" ]; then
-        echo "Tempo de expiração atingido! Resetando a sandbox..."
-        rm -rf "$SANDBOX_DIR"/*
-        rm -rf "$HOME/sandbox"/*
-        mkdir -p "$SANDBOX_DIR"
-        mkdir -p "$HOME/sandbox"
+        rm -rf "$SANDBOX_DIR"/* "$VM_WORKSPACE"/*
+        mkdir -p "$SANDBOX_DIR" "$VM_WORKSPACE"
+        echo "$VM_WORKSPACE" > "$SESSION_DIR_FILE"
         garantir_dependencias
-        
         NEW_EXP_MS=$((CURRENT_MS + 120000))
-        PAYLOAD_RESET="{\"id\":\"$ID_GERADO\",\"expiration\":$NEW_EXP_MS,\".resposta\":\".sandbox expirada e resetada com sucesso!\"}"
-        curl -s -X PATCH -d "$PAYLOAD_RESET" "$FIREBASE_URL" > /dev/null
-        
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"expiration\":$NEW_EXP_MS,\".sandbox expirada e resetada!\":\"\"}" "$FIREBASE_URL" > /dev/null
         DADOS=$(curl -s "$FIREBASE_URL")
     fi
 
-    PAYLOAD_STATUS="{\"id\":\"$ID_GERADO\",\"data_hora\":\"$DATA_HORA_ATUAL\"}"
-    curl -s -X PATCH -d "$PAYLOAD_STATUS" "$FIREBASE_URL" > /dev/null
+    curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
     
     CMD=$(python3 -c '
 import json, sys
 try:
     data = json.loads(sys.stdin.read())
     val = data.get("comando", "")
-    if val:
-        val = val.replace("\\n", "\n")
-    print(val if val is not None else "")
+    print(val.replace("\\n", "\n") if val else "")
 except:
     print("")
 ' <<EOF
@@ -112,9 +143,7 @@ import json, sys
 try:
     data = json.loads(sys.stdin.read())
     val = data.get("cmd_ubuntu", "")
-    if val:
-        val = val.replace("\\n", "\n")
-    print(val if val is not None else "")
+    print(val.replace("\\n", "\n") if val else "")
 except:
     print("")
 ' <<EOF
@@ -122,92 +151,79 @@ $DADOS
 EOF
 )
 
-    COR_CMD=$(python3 -c '
-import json, sys
-try:
-    data = json.loads(sys.stdin.read())
-    val = data.get("cor", "") or data.get("color", "")
-    print(val if val is not None else "")
-except:
-    print("")
-' <<EOF
-$DADOS
-EOF
-)
-
-    # 1. Captura e processa alteração de cor/tema vinda do Firebase
-    if [ ! -z "$COR_CMD" ] && [ "$COR_CMD" != "null" ]; then
-        echo "Alteração de cor/tema recebida do Firebase: $COR_CMD"
-        echo "$COR_CMD" > "$SANDBOX_DIR/.current_color"
-
-        RESPOSTA="Cor/Tema alterado com sucesso para: $COR_CMD"
-        RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
-$RESPOSTA
-EOF
-)
-
-        PAYLOAD_COR="{\"id\":\"$ID_GERADO\",\"cor\":null,\"color\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}"
-        curl -s -X PATCH -d "$PAYLOAD_COR" "$FIREBASE_URL" > /dev/null
-
-    # 2. Execução via Botão Ubuntu do Painel Web dentro da .sandbox
-    elif [ ! -z "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
-        echo "Executando ação do Botão Ubuntu na .sandbox: $CMD_UBUNTU"
-        
-        garantir_dependencias
+    # Execução Botão Ubuntu / Painel (Root nativo)
+    if [ ! -z "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
+        echo -e "\n${CYAN}[CMD WEB] Executando Botão: $CMD_UBUNTU${NC}"
         RESPOSTA=""
+        CURRENT_DIR=$(cat "$SESSION_DIR_FILE")
+        [ -z "$CURRENT_DIR" ] && CURRENT_DIR="$VM_WORKSPACE"
+
         if [ "$CMD_UBUNTU" = "1" ] || [ "$CMD_UBUNTU" = "create" ]; then
-            RESPOSTA="[sandbox] Ambiente Cloud Shell ativo com ferramentas disponíveis!"
+            RESPOSTA="[.sandbox] Ambiente ativo com dependências!"
         elif [ "$CMD_UBUNTU" = "2" ] || [ "$CMD_UBUNTU" = "restart" ]; then
-            RESPOSTA="[sandbox] Ambiente reiniciado e dependências verificadas."
+            RESPOSTA="[.sandbox] Ambiente reiniciado."
         elif [ "$CMD_UBUNTU" = "4" ] || [ "$CMD_UBUNTU" = "clean" ]; then
-            rm -rf "$SANDBOX_DIR"/*
-            rm -rf "$HOME/sandbox"/*
-            mkdir -p "$SANDBOX_DIR"
-            mkdir -p "$HOME/sandbox"
+            rm -rf "$SANDBOX_DIR"/* "$VM_WORKSPACE"/*
+            mkdir -p "$SANDBOX_DIR" "$VM_WORKSPACE"
+            echo "$VM_WORKSPACE" > "$SESSION_DIR_FILE"
             garantir_dependencias
-            RESPOSTA="[sandbox] Armazenamento isolado limpo e reinicializado com sucesso!"
+            RESPOSTA="[.sandbox] Limpo com sucesso!"
         else
-            RESPOSTA=$(cd "$HOME/sandbox" && export HOME="$HOME" && bash -c "$CMD_UBUNTU" 2>&1)
+            RESPOSTA=$(env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm bash -c "
+            cd '$CURRENT_DIR'
+            $CMD_UBUNTU
+            pwd > '$SANDBOX_DIR/.tmp_pwd'
+            " 2>&1)
+            if [ -f "$SANDBOX_DIR/.tmp_pwd" ]; then
+                cat "$SANDBOX_DIR/.tmp_pwd" > "$SESSION_DIR_FILE"
+                rm -f "$SANDBOX_DIR/.tmp_pwd"
+            fi
         fi
 
         RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
-$RESPOSTA
+$RESPOSTS
 EOF
 )
-        PAYLOAD="{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}"
-        curl -s -X PATCH -d "$PAYLOAD" "$FIREBASE_URL" > /dev/null
+        # Ajuste de segurança caso $RESPOSTA venha vazia
+        [ -z "$RESPOSTA_ESCAPADA" ] && RESPOSTA_ESCAPADA="\"\""
 
-    # 3. Execução de comandos gerais
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
+
+    # Execução Comando Geral (Com suporte a cd e scripts via curl)
     elif [ ! -z "$CMD" ] && [ "$CMD" != "null" ]; then
-        echo "Executando comando no Cloud Shell:"
-        echo "$CMD"
+        echo -e "\n${CYAN}[CMD WEB] Executando Comando Geral: $CMD${NC}"
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":\"[⏳] Processando...\",\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
+
+        CURRENT_DIR=$(cat "$SESSION_DIR_FILE")
+        [ -z "$CURRENT_DIR" ] && CURRENT_DIR="$VM_WORKSPACE"
+
+        RESPOSTA=$(env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm bash -c "
+        mkdir -p '$VM_WORKSPACE'
+        cd '$CURRENT_DIR'
         
-        garantir_dependencias
-
-        PAYLOAD_INICIAL="{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":\"[⏳] Processando comando no Cloud Shell...\",\"data_hora\":\"$DATA_HORA_ATUAL\"}"
-        curl -s -X PATCH -d "$PAYLOAD_INICIAL" "$FIREBASE_URL" > /dev/null
-
-        RESPOSTA=$(cd "$HOME/sandbox" && export HOME="$HOME" && bash -c "
         if echo '$CMD' | grep -q 'bash <(curl'; then
             URL_EXTRAIDA=\$(echo '$CMD' | grep -oE 'https?://[^ \)]+')
             curl -s \"\$URL_EXTRAIDA\" -o /tmp/script_exec.sh
             bash /tmp/script_exec.sh
             rm -f /tmp/script_exec.sh
         else
-            eval '$CMD'
+            $CMD
         fi
+        
+        pwd > '$SANDBOX_DIR/.tmp_pwd'
         " 2>&1)
+
+        if [ -f "$SANDBOX_DIR/.tmp_pwd" ]; then
+            cat "$SANDBOX_DIR/.tmp_pwd" > "$SESSION_DIR_FILE"
+            rm -f "$SANDBOX_DIR/.tmp_pwd"
+        fi
 
         RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
 $RESPOSTA
 EOF
 )
-
-        PAYLOAD="{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}"
-        curl -s -X PATCH -d "$PAYLOAD" "$FIREBASE_URL" > /dev/null
-
-        echo "Resposta do comando enviada com sucesso!"
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
     fi
 
-    sleep 0.90
+    sleep 1
 done
