@@ -90,10 +90,10 @@ echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
 echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
 echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
 echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos em tempo real (10ms)...${NC}"
+echo -e "${GREEN}     [✓] Monitorando comandos em tempo real...${NC}"
 echo ""
 
-# Variável de controle para evitar limpar o workspace repetidamente enquanto estiver expirado
+# Variável de controle para gerenciar avisos de expiração
 WORKSPACE_LIMPO=false
 
 # ==========================================
@@ -146,27 +146,29 @@ EOF
         exit 0
     fi
 
-    # 2. Se o tempo de expiração esgotar: limpa a raiz (se já não foi limpa) e fica esperando renovarem o expiration
+    # 2. Se o tempo de expiração esgotar: limpa o workspace, mas CONTINUA atualizando a data_hora a cada 1s sem parar
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
         if [ "$WORKSPACE_LIMPO" = "false" ]; then
-            echo -e "\n${YELLOW}[!] Tempo de expiração esgotado (30s). Limpando workspace e aguardando renovação...${NC}"
+            echo -e "\n${YELLOW}[!] Tempo de expiração esgotado. Limpando workspace e mantendo conexão ativa...${NC}"
             rm -rf "$VM_WORKSPACE"
             mkdir -p "$VM_WORKSPACE"
             
             curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"[!] Expiração atingida. Workspace limpo, aguardando renovação de tempo.\",\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
             
             WORKSPACE_LIMPO=true
+        else
+            # Continua atualizando data_hora a cada 1 segundo enquanto estiver expirado, sem parar
+            curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
         fi
         
-        # Intervalo reduzido para checar renovações rapidamente
-        sleep 0.1
+        sleep 1
         continue
     else
-        # Se o tempo foi renovado externamente, reseta a flag para permitir limpar na próxima expiração
+        # Se o tempo foi renovado externamente, reseta a flag
         WORKSPACE_LIMPO=false
     fi
 
-    # Atualiza o timestamp atual em ms no Firebase
+    # Atualiza o timestamp atual em ms no Firebase (com o script rodando normalmente)
     curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
     
     # Extrai comando genérico
@@ -222,6 +224,6 @@ EOF
         curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"comando\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
     fi
 
-    # Intervalo de 10ms (0.01 segundos)
+    # Intervalo rápido de 10ms (0.01 segundos) quando ativo
     sleep 0.01
 done
