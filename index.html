@@ -59,7 +59,7 @@
         let ultimaCorProcessada = "";
         let comandoAtualDigitando = "";
         let estadoActionAtual = true;
-        let modoManualUrl = false; // Trava para não deixar o automático interferir se usar a URL
+        let modoManualUrl = false;
 
         window.onload = function() {
             const urlParams = new URLSearchParams(window.location.search);
@@ -67,18 +67,18 @@
             const actionDaUrl = urlParams.get('action');
             const timeDaUrl = urlParams.get('time') || urlParams.get('expiration');
 
-            // 1. Configura o Action se vier na URL
+            // Define o action inicial se passado na URL
             if (actionDaUrl !== null) {
                 estadoActionAtual = (actionDaUrl.toLowerCase() === 'true');
                 atualizarBotaoActionVisual();
             }
 
-            // 2. Se tiver ID na URL, ativa o modo manual/direto
-            if (idDaUrl) {
+            // Se houver ID na URL, ativa o modo manual imediatamente
+            if (idDaUrl && idDaUrl.trim() !== "") {
                 modoManualUrl = true;
                 conectarComIdEspecifico(idDaUrl.trim(), timeDaUrl);
             } else {
-                // Modo automático padrão (varredura)
+                // Apenas inicia o automático se NÃO houver ID na URL
                 procurarEConectarIPAtivo();
                 setInterval(procurarEConectarIPAtivo, 5000);
             }
@@ -133,7 +133,7 @@
             let term = document.getElementById('resposta-terminal');
             term.innerHTML = `root@AMHEEX-VPS ~# <span class="txt-azul">Conectado via URL à sandbox [${id}]</span><br>root@AMHEEX-VPS ~# `;
 
-            // Prepara o objeto para atualizar no Firebase (action e opcionalmente expiration)
+            // Monta o objeto com os parâmetros iniciais vindos da URL
             let dadosAtualizacao = { action: estadoActionAtual };
             
             if (segundosExpiracao) {
@@ -143,7 +143,7 @@
                 }
             }
 
-            // Envia as configurações iniciais para o nó do Firebase
+            // Envia os dados para o Firebase imediatamente
             fetch(`${FIREBASE_HOST}/STORAGE/${meuIdAtual}/CMD.json`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
@@ -178,8 +178,7 @@
         }
 
         function procurarEConectarIPAtivo() {
-            // Se o usuário passou ID pela URL, bloqueia a varredura automática para não conflitar
-            if (modoManualUrl) return;
+            if (modoManualUrl) return; // Bloqueia a varredura se estiver usando URL
 
             fetch(`${FIREBASE_HOST}/STORAGE.json`)
                 .then(response => response.json())
@@ -239,6 +238,8 @@
         }
 
         function desconectarSandbox(motivo) {
+            if (modoManualUrl) return; // Impede que o modo manual seja derrubado por falhas na varredura automática
+
             meuIdAtual = "";
             document.getElementById('info-id').innerText = "-";
             let statusElem = document.getElementById('status-conexao');
@@ -276,13 +277,15 @@
                 .then(response => response.json())
                 .then(data => {
                     if (!data) {
-                        desconectarSandbox("Removido");
+                        if (!modoManualUrl) desconectarSandbox("Removido");
                         return;
                     }
 
                     if (data.action === false || String(data.action).toLowerCase() === "false") {
-                        desconectarSandbox("Desativado");
-                        return;
+                        if (!modoManualUrl) {
+                            desconectarSandbox("Desativado");
+                            return;
+                        }
                     }
 
                     if (data.expiration) {
@@ -293,7 +296,7 @@
                     }
 
                     let corAtualRecebida = data.cor || data.color;
-                    if (corAtualRecebida && corAtualRecebida !== ultimaCorProcessada) {
+                    if (corAtualRecebidas = corAtualRecebida && corAtualRecebida !== ultimaCorProcessada) {
                         ultimaCorProcessada = corAtualRecebida;
                         let term = document.getElementById('resposta-terminal');
                         let classeCorDesejada = 'txt-branco';
