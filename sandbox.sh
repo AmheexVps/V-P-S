@@ -1,8 +1,8 @@
-#!/data/data/com.termux/files/usr/bin/bash
+#!/usr/bin/env bash
 set +H
 
 # ==========================================
-# 🌟 CONFIGURAÇÕES & CORES DO PAINEL
+# 🌟 CONFIGURAÇÕES & CORES DO PAINEL (GOOGLE CLOUD SHELL)
 # ==========================================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -15,36 +15,23 @@ NC='\033[0m'
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/root/sandbox"
 SESSION_DIR_FILE="$SANDBOX_DIR/.current_dir"
-mkdir -p "$SANDBOX_DIR"
-[ ! -f "$SESSION_DIR_FILE" ] && echo "/root/sandbox" > "$SESSION_DIR_FILE"
+mkdir -p "$SANDBOX_DIR" "$VM_WORKSPACE"
+[ ! -f "$SESSION_DIR_FILE" ] && echo "$VM_WORKSPACE" > "$SESSION_DIR_FILE"
 
-# Caminho absoluto obrigatório para o proot-distro no Termux
-PROOT_BIN="/data/data/com.termux/files/usr/bin/proot-distro"
-
-# Identificação Firebase
+# Identificação Firebase baseada no IP Público do Cloud Shell
 IP_ATUAL=$(curl -s https://api.ipify.org || curl -s https://icanhazip.com || curl -s https://ifconfig.me)
 [ -z "$IP_ATUAL" ] && IP_ATUAL="127.0.0.1"
 IP_SEM_PONTOS=$(echo "$IP_ATUAL" | tr -d '.')
 ID_GERADO="ID${IP_SEM_PONTOS}"
 FIREBASE_URL="https://amheexbot-default-rtdb.firebaseio.com/STORAGE/${ID_GERADO}/CMD.json"
 
-# Garante proot-distro e Ubuntu
-if [ ! -f "$PROOT_BIN" ]; then
-    pkg install -y proot-distro >/dev/null 2>&1
-fi
-if [ ! -d "/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/ubuntu" ]; then
-    "$PROOT_BIN" install ubuntu >/dev/null 2>&1
-fi
-
+# Garante dependências básicas no ambiente do Google Cloud Shell
 garantir_dependencias() {
-    "$PROOT_BIN" login ubuntu --shared-tmp -- bash -c "
-    mkdir -p /root/sandbox
     export DEBIAN_FRONTEND=noninteractive
     if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
         apt-get update -y >/dev/null 2>&1
         apt-get install -y curl git wget unzip build-essential nodejs -y >/dev/null 2>&1
     fi
-    " >/dev/null 2>&1
 }
 
 garantir_dependencias
@@ -54,9 +41,9 @@ garantir_dependencias
 # ==========================================
 clear
 echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / PROOT-DISTRO SANDBOX${BLUE}            │${NC}"
+echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE CLOUD SHELL SANDBOX${BLUE}      │${NC}"
 echo -e "${BLUE}     │                                                  │${NC}"
-echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}UBUNTU ROOT${BLUE}     ${YELLOW}FIREBASE SYNC${BLUE}   │${NC}"
+echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}NATIVE ROOT${BLUE}     ${YELLOW}FIREBASE SYNC${BLUE}   │${NC}"
 echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
 echo ""
 echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
@@ -92,12 +79,11 @@ $DADOS
 EOF
 )
 
-    # Se a chave action for FALSE, desativa o script do Termux e apaga o Ubuntu
+    # Se a chave action for FALSE, limpa e encerra o script
     if [ "$ACTION_VAL" = "FALSE" ]; then
-        echo -e "\n${RED}[!] Chave 'action' alterada para FALSE. Desativando script e apagando ambiente...${NC}"
-        "$PROOT_BIN" remove ubuntu >/dev/null 2>&1
-        rm -rf "$SANDBOX_DIR"
-        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"resposta\":\"[❌] Script desativado e Ubuntu apagado via Firebase!\",\"action\":false}" "$FIREBASE_URL" > /dev/null
+        echo -e "\n${RED}[!] Chave 'action' alterada para FALSE. Desativando script e limpando ambiente...${NC}"
+        rm -rf "$SANDBOX_DIR" "$VM_WORKSPACE"
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"resposta\":\"[❌] Script desativado via Firebase!\",\"action\":false}" "$FIREBASE_URL" > /dev/null
         echo -e "${RED}[X] Script encerrado com sucesso.${NC}"
         exit 0
     fi
@@ -128,10 +114,9 @@ EOF
     if [ "$ACTION" = "CREATE" ]; then
         curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"expiration\":$VAL_MS}" "$FIREBASE_URL" > /dev/null
     elif [ "$CURRENT_MS" -ge "$VAL_MS" ]; then
-        rm -rf "$SANDBOX_DIR"/*
-        mkdir -p "$SANDBOX_DIR"
-        echo "/root/sandbox" > "$SESSION_DIR_FILE"
-        "$PROOT_BIN" login ubuntu --shared-tmp -- rm -rf /root/sandbox/* >/dev/null 2>&1
+        rm -rf "$SANDBOX_DIR"/* "$VM_WORKSPACE"/*
+        mkdir -p "$SANDBOX_DIR" "$VM_WORKSPACE"
+        echo "$VM_WORKSPACE" > "$SESSION_DIR_FILE"
         garantir_dependencias
         NEW_EXP_MS=$((CURRENT_MS + 120000))
         curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"expiration\":$NEW_EXP_MS,\".sandbox expirada e resetada!\":\"\"}" "$FIREBASE_URL" > /dev/null
@@ -166,25 +151,25 @@ $DADOS
 EOF
 )
 
-    # Execução Botão Ubuntu (Root)
+    # Execução Botão Ubuntu / Painel (Root nativo)
     if [ ! -z "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
-        echo -e "\n${CYAN}[CMD WEB] Executando Botão Ubuntu: $CMD_UBUNTU${NC}"
+        echo -e "\n${CYAN}[CMD WEB] Executando Botão: $CMD_UBUNTU${NC}"
         RESPOSTA=""
         CURRENT_DIR=$(cat "$SESSION_DIR_FILE")
-        [ -z "$CURRENT_DIR" ] && CURRENT_DIR="/root/sandbox"
+        [ -z "$CURRENT_DIR" ] && CURRENT_DIR="$VM_WORKSPACE"
 
         if [ "$CMD_UBUNTU" = "1" ] || [ "$CMD_UBUNTU" = "create" ]; then
-            RESPOSTA="[.sandbox] Ambiente Root ativo com dependências!"
+            RESPOSTA="[.sandbox] Ambiente ativo com dependências!"
         elif [ "$CMD_UBUNTU" = "2" ] || [ "$CMD_UBUNTU" = "restart" ]; then
             RESPOSTA="[.sandbox] Ambiente reiniciado."
         elif [ "$CMD_UBUNTU" = "4" ] || [ "$CMD_UBUNTU" = "clean" ]; then
-            rm -rf "$SANDBOX_DIR"/* && mkdir -p "$SANDBOX_DIR"
-            echo "/root/sandbox" > "$SESSION_DIR_FILE"
-            "$PROOT_BIN" login ubuntu --shared-tmp -- rm -rf /root/sandbox/* >/dev/null 2>&1
+            rm -rf "$SANDBOX_DIR"/* "$VM_WORKSPACE"/*
+            mkdir -p "$SANDBOX_DIR" "$VM_WORKSPACE"
+            echo "$VM_WORKSPACE" > "$SESSION_DIR_FILE"
             garantir_dependencias
             RESPOSTA="[.sandbox] Limpo com sucesso!"
         else
-            RESPOSTA=$("$PROOT_BIN" login ubuntu --shared-tmp -- env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm bash -c "
+            RESPOSTA=$(env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm bash -c "
             cd '$CURRENT_DIR'
             $CMD_UBUNTU
             pwd > '$SANDBOX_DIR/.tmp_pwd'
@@ -196,21 +181,24 @@ EOF
         fi
 
         RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
-$RESPOSTA
+$RESPOSTS
 EOF
 )
+        # Ajuste de segurança caso $RESPOSTA venha vazia
+        [ -z "$RESPOSTA_ESCAPADA" ] && RESPOSTA_ESCAPADA="\"\""
+
         curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
 
-    # Execução Comando Geral (Root com suporte a cd)
+    # Execução Comando Geral (Com suporte a cd e scripts via curl)
     elif [ ! -z "$CMD" ] && [ "$CMD" != "null" ]; then
         echo -e "\n${CYAN}[CMD WEB] Executando Comando Geral: $CMD${NC}"
         curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":\"[⏳] Processando...\",\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
 
         CURRENT_DIR=$(cat "$SESSION_DIR_FILE")
-        [ -z "$CURRENT_DIR" ] && CURRENT_DIR="/root/sandbox"
+        [ -z "$CURRENT_DIR" ] && CURRENT_DIR="$VM_WORKSPACE"
 
-        RESPOSTA=$("$PROOT_BIN" login ubuntu --shared-tmp -- env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm bash -c "
-        mkdir -p /root/sandbox
+        RESPOSTA=$(env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm bash -c "
+        mkdir -p '$VM_WORKSPACE'
         cd '$CURRENT_DIR'
         
         if echo '$CMD' | grep -q 'bash <(curl'; then
