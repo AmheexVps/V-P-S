@@ -14,7 +14,9 @@ NC='\033[0m'
 
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/root/sandbox"
+SESSION_DIR_FILE="$SANDBOX_DIR/.current_dir"
 mkdir -p "$SANDBOX_DIR"
+[ ! -f "$SESSION_DIR_FILE" ] && echo "/root/sandbox" > "$SESSION_DIR_FILE"
 
 # Identificação Firebase
 IP_ATUAL=$(curl -s https://api.ipify.org || curl -s https://icanhazip.com || curl -s https://ifconfig.me)
@@ -125,10 +127,11 @@ EOF
     elif [ "$CURRENT_MS" -ge "$VAL_MS" ]; then
         rm -rf "$SANDBOX_DIR"/*
         mkdir -p "$SANDBOX_DIR"
+        echo "/root/sandbox" > "$SESSION_DIR_FILE"
         proot-distro login ubuntu --shared-tmp -- rm -rf /root/sandbox/* >/dev/null 2>&1
         garantir_dependencias
         NEW_EXP_MS=$((CURRENT_MS + 120000))
-        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"expiration\":$NEW_EXP_MS,\"resposta\":\".sandbox expirada e resetada!\"}" "$FIREBASE_URL" > /dev/null
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"expiration\":$NEW_EXP_MS,\".sandbox expirada e resetada!\":\"\"}" "$FIREBASE_URL" > /dev/null
         DADOS=$(curl -s "$FIREBASE_URL")
     fi
 
@@ -164,17 +167,29 @@ EOF
     if [ ! -z "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
         echo -e "\n${CYAN}[CMD WEB] Executando Botão Ubuntu: $CMD_UBUNTU${NC}"
         RESPOSTA=""
+        CURRENT_DIR=$(cat "$SESSION_DIR_FILE")
+        [ -z "$CURRENT_DIR" ] && CURRENT_DIR="/root/sandbox"
+
         if [ "$CMD_UBUNTU" = "1" ] || [ "$CMD_UBUNTU" = "create" ]; then
             RESPOSTA="[.sandbox] Ambiente Root ativo com dependências!"
         elif [ "$CMD_UBUNTU" = "2" ] || [ "$CMD_UBUNTU" = "restart" ]; then
             RESPOSTA="[.sandbox] Ambiente reiniciado."
         elif [ "$CMD_UBUNTU" = "4" ] || [ "$CMD_UBUNTU" = "clean" ]; then
             rm -rf "$SANDBOX_DIR"/* && mkdir -p "$SANDBOX_DIR"
+            echo "/root/sandbox" > "$SESSION_DIR_FILE"
             proot-distro login ubuntu --shared-tmp -- rm -rf /root/sandbox/* >/dev/null 2>&1
             garantir_dependencias
             RESPOSTA="[.sandbox] Limpo com sucesso!"
         else
-            RESPOSTA=$(proot-distro login ubuntu --shared-tmp -- bash -c "cd /root/sandbox && export HOME=/root && $CMD_UBUNTU" 2>&1 | grep -v "proot warning:")
+            RESPOSTA=$(proot-distro login ubuntu --shared-tmp -- env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm bash -c "
+            cd '$CURRENT_DIR'
+            $CMD_UBUNTU
+            pwd > '$SANDBOX_DIR/.tmp_pwd'
+            " 2>&1)
+            if [ -f "$SANDBOX_DIR/.tmp_pwd" ]; then
+                cat "$SANDBOX_DIR/.tmp_pwd" > "$SESSION_DIR_FILE"
+                rm -f "$SANDBOX_DIR/.tmp_pwd"
+            fi
         fi
 
         RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
@@ -183,22 +198,34 @@ EOF
 )
         curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
 
-    # Execução Comando Geral (Root)
+    # Execução Comando Geral (Root com suporte a cd)
     elif [ ! -z "$CMD" ] && [ "$CMD" != "null" ]; then
         echo -e "\n${CYAN}[CMD WEB] Executando Comando Geral: $CMD${NC}"
         curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"resposta\":\"[⏳] Processando...\",\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
 
-        RESPOSTA=$(proot-distro login ubuntu --shared-tmp -- bash -c "
-        mkdir -p /root/sandbox && cd /root/sandbox && export HOME=/root
+        CURRENT_DIR=$(cat "$SESSION_DIR_FILE")
+        [ -z "$CURRENT_DIR" ] && CURRENT_DIR="/root/sandbox"
+
+        RESPOSTA=$(proot-distro login ubuntu --shared-tmp -- env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm bash -c "
+        mkdir -p /root/sandbox
+        cd '$CURRENT_DIR'
+        
         if echo '$CMD' | grep -q 'bash <(curl'; then
             URL_EXTRAIDA=\$(echo '$CMD' | grep -oE 'https?://[^ \)]+')
             curl -s \"\$URL_EXTRAIDA\" -o /tmp/script_exec.sh
             bash /tmp/script_exec.sh
             rm -f /tmp/script_exec.sh
         else
-            eval '$CMD'
+            $CMD
         fi
-        " 2>&1 | grep -v "proot warning:")
+        
+        pwd > '$SANDBOX_DIR/.tmp_pwd'
+        " 2>&1)
+
+        if [ -f "$SANDBOX_DIR/.tmp_pwd" ]; then
+            cat "$SANDBOX_DIR/.tmp_pwd" > "$SESSION_DIR_FILE"
+            rm -f "$SANDBOX_DIR/.tmp_pwd"
+        fi
 
         RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
 $RESPOSTA
