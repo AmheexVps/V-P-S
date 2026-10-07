@@ -47,7 +47,7 @@
         <div>Expira: <span id="tempo-decorrido">0</span>s</div>
     </div>
 
-    <div id="resposta-terminal" class="terminal-screen txt-branco">root@AMHEEX-VPS ~# Conectando à sandbox ativa...</div>
+    <div id="resposta-terminal" class="terminal-screen txt-branco">root@AMHEEX-VPS ~# Inicializando conexão...</div>
 
     <input type="text" id="input-invisivel" autocomplete="off" disabled>
 
@@ -61,8 +61,23 @@
         let estadoActionAtual = true;
 
         window.onload = function() {
-            procurarEConectarIPAtivo();
-            setInterval(procurarEConectarIPAtivo, 5000);
+            const urlParams = new URLSearchParams(window.location.search);
+            const idDaUrl = urlParams.get('id');
+            const actionDaUrl = urlParams.get('action');
+            const timeDaUrl = urlParams.get('time') || urlParams.get('expiration');
+
+            // Configura o action inicial se passado na URL
+            if (actionDaUrl !== null) {
+                estadoActionAtual = (actionDaUrl.toLowerCase() === 'true');
+                atualizarBotaoActionVisual();
+            }
+
+            if (idDaUrl) {
+                conectarComIdEspecifico(idDaUrl.trim(), timeDaUrl);
+            } else {
+                procurarEConectarIPAtivo();
+                setInterval(procurarEConectarIPAtivo, 5000);
+            }
             
             window.addEventListener('resize', () => {
                 let term = document.getElementById('resposta-terminal');
@@ -101,6 +116,34 @@
         function apagarSandboxExpirada(idParaApagar) {
             fetch(`${FIREBASE_HOST}/STORAGE/${idParaApagar}.json`, { method: 'DELETE' })
                 .catch(err => console.error("Erro ao apagar sandbox:", err));
+        }
+
+        function conectarComIdEspecifico(id, segundosExpiracao) {
+            meuIdAtual = id;
+            document.getElementById('info-id').innerText = meuIdAtual;
+            let statusElem = document.getElementById('status-conexao');
+            statusElem.innerText = "ONLINE";
+            statusElem.className = "status-online";
+            alterarEstadoControles(true);
+
+            let term = document.getElementById('resposta-terminal');
+            term.innerHTML = `root@AMHEEX-VPS ~# <span class="txt-azul">Conectado diretamente à sandbox [${id}]</span><br>root@AMHEEX-VPS ~# `;
+
+            // Se definiu segundos na URL, atualiza o expiration no Firebase
+            if (segundosExpiracao) {
+                let novoExpirationMs = new Date().getTime() + (parseInt(segundosExpiracao) * 1000);
+                fetch(`${FIREBASE_HOST}/STORAGE/${meuIdAtual}/CMD.json`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        expiration: novoExpirationMs,
+                        action: estadoActionAtual 
+                    })
+                }).catch(err => console.error("Erro ao definir tempo na URL:", err));
+            }
+
+            if (intervaloMonitoramento) clearInterval(intervaloMonitoramento);
+            intervaloMonitoramento = setInterval(buscarDadosFirebase, 1000);
         }
 
         function alternarActionFirebase() {
@@ -146,7 +189,6 @@
                             let expirationMs = nodo.CMD.expiration ? parseInt(nodo.CMD.expiration) : 0;
                             let actVal = nodo.CMD.action;
                             
-                            // Se action for explicitamente false ou expirado, gerencia
                             if ((actVal === false || String(actVal).toLowerCase() === "false") && meuIdAtual === id) {
                                 desconectarSandbox("Desativado (False)");
                                 return;
@@ -174,7 +216,7 @@
                         alterarEstadoControles(true);
 
                         let term = document.getElementById('resposta-terminal');
-                        term.innerHTML += `<br>root@AMHEEX-VPS ~# <span class="txt-azul">Conectado à sandbox [${melhorId}]</span><br>root@AMHEEX-VPS ~# `;
+                        term.innerHTML = `root@AMHEEX-VPS ~# <span class="txt-azul">Conectado à sandbox [${melhorId}]</span><br>root@AMHEEX-VPS ~# `;
 
                         if (intervaloMonitoramento) clearInterval(intervaloMonitoramento);
                         intervaloMonitoramento = setInterval(buscarDadosFirebase, 1000);
@@ -227,7 +269,6 @@
                         return;
                     }
 
-                    // Verifica se o action mudou para false remotamente
                     if (data.action === false || String(data.action).toLowerCase() === "false") {
                         desconectarSandbox("Desativado");
                         return;
