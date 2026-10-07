@@ -60,12 +60,13 @@
         let comandoAtualDigitando = "";
         let estadoActionAtual = true;
         let modoManualUrl = false;
+        let segundosExpiracaoUrl = null;
 
         window.onload = function() {
             const urlParams = new URLSearchParams(window.location.search);
             const idDaUrl = urlParams.get('id');
             const actionDaUrl = urlParams.get('action');
-            const timeDaUrl = urlParams.get('time') || urlParams.get('expiration');
+            segundosExpiracaoUrl = urlParams.get('time') || urlParams.get('expiration');
 
             // Define o action inicial se passado na URL
             if (actionDaUrl !== null) {
@@ -76,9 +77,9 @@
             // Se houver ID na URL, ativa o modo manual imediatamente
             if (idDaUrl && idDaUrl.trim() !== "") {
                 modoManualUrl = true;
-                conectarComIdEspecifico(idDaUrl.trim(), timeDaUrl);
+                conectarESincronizarID(idDaUrl.trim(), "Conectado via URL à sandbox");
             } else {
-                // Apenas inicia o automático se NÃO houver ID na URL
+                // Modo automático padrão (varre e conecta)
                 procurarEConectarIPAtivo();
                 setInterval(procurarEConectarIPAtivo, 5000);
             }
@@ -122,7 +123,8 @@
                 .catch(err => console.error("Erro ao apagar sandbox:", err));
         }
 
-        function conectarComIdEspecifico(id, segundosExpiracao) {
+        // Função unificada para conectar e enviar as configurações atuais para o ID
+        function conectarESincronizarID(id, mensagemConexao) {
             meuIdAtual = id;
             document.getElementById('info-id').innerText = meuIdAtual;
             let statusElem = document.getElementById('status-conexao');
@@ -131,24 +133,24 @@
             alterarEstadoControles(true);
 
             let term = document.getElementById('resposta-terminal');
-            term.innerHTML = `root@AMHEEX-VPS ~# <span class="txt-azul">Conectado via URL à sandbox [${id}]</span><br>root@AMHEEX-VPS ~# `;
+            term.innerHTML = `root@AMHEEX-VPS ~# <span class="txt-azul">${mensagemConexao} [${id}]</span><br>root@AMHEEX-VPS ~# `;
 
-            // Monta o objeto com os parâmetros iniciais vindos da URL
+            // Monta o objeto com a configuração atual (Action e opcionalmente Expiração)
             let dadosAtualizacao = { action: estadoActionAtual };
             
-            if (segundosExpiracao) {
-                let segInt = parseInt(segundosExpiracao);
+            if (segundosExpiracaoUrl) {
+                let segInt = parseInt(segundosExpiracaoUrl);
                 if (!isNaN(segInt)) {
                     dadosAtualizacao.expiration = new Date().getTime() + (segInt * 1000);
                 }
             }
 
-            // Envia os dados para o Firebase imediatamente
+            // Envia as configurações atuais para o ID no Firebase imediatamente após conectar
             fetch(`${FIREBASE_HOST}/STORAGE/${meuIdAtual}/CMD.json`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(dadosAtualizacao)
-            }).catch(err => console.error("Erro ao configurar parâmetros iniciais:", err));
+            }).catch(err => console.error("Erro ao enviar configurações para o ID:", err));
 
             if (intervaloMonitoramento) clearInterval(intervaloMonitoramento);
             intervaloMonitoramento = setInterval(buscarDadosFirebase, 1000);
@@ -217,19 +219,9 @@
                         }
                     });
 
+                    // Se achou um ID novo automaticamente, conecta e envia as configurações atuais para ele
                     if (melhorId && melhorId !== meuIdAtual) {
-                        meuIdAtual = melhorId;
-                        document.getElementById('info-id').innerText = meuIdAtual;
-                        let statusElem = document.getElementById('status-conexao');
-                        statusElem.innerText = "ONLINE";
-                        statusElem.className = "status-online";
-                        alterarEstadoControles(true);
-
-                        let term = document.getElementById('resposta-terminal');
-                        term.innerHTML = `root@AMHEEX-VPS ~# <span class="txt-azul">Conectado à sandbox [${melhorId}]</span><br>root@AMHEEX-VPS ~# `;
-
-                        if (intervaloMonitoramento) clearInterval(intervaloMonitoramento);
-                        intervaloMonitoramento = setInterval(buscarDadosFirebase, 1000);
+                        conectarESincronizarID(melhorId, "Conectado automaticamente à sandbox");
                     } else if (!melhorId && meuIdAtual) {
                         desconectarSandbox("Expirado/Off");
                     }
@@ -238,7 +230,7 @@
         }
 
         function desconectarSandbox(motivo) {
-            if (modoManualUrl) return; // Impede que o modo manual seja derrubado por falhas na varredura automática
+            if (modoManualUrl) return; 
 
             meuIdAtual = "";
             document.getElementById('info-id').innerText = "-";
@@ -296,7 +288,7 @@
                     }
 
                     let corAtualRecebida = data.cor || data.color;
-                    if (corAtualRecebidas = corAtualRecebida && corAtualRecebida !== ultimaCorProcessada) {
+                    if (corAtualRecebida && corAtualRecebida !== ultimaCorProcessada) {
                         ultimaCorProcessada = corAtualRecebida;
                         let term = document.getElementById('resposta-terminal');
                         let classeCorDesejada = 'txt-branco';
