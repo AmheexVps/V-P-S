@@ -59,6 +59,7 @@
         let ultimaCorProcessada = "";
         let comandoAtualDigitando = "";
         let estadoActionAtual = true;
+        let modoManualUrl = false; // Trava para não deixar o automático interferir se usar a URL
 
         window.onload = function() {
             const urlParams = new URLSearchParams(window.location.search);
@@ -66,15 +67,18 @@
             const actionDaUrl = urlParams.get('action');
             const timeDaUrl = urlParams.get('time') || urlParams.get('expiration');
 
-            // Configura o action inicial se passado na URL
+            // 1. Configura o Action se vier na URL
             if (actionDaUrl !== null) {
                 estadoActionAtual = (actionDaUrl.toLowerCase() === 'true');
                 atualizarBotaoActionVisual();
             }
 
+            // 2. Se tiver ID na URL, ativa o modo manual/direto
             if (idDaUrl) {
+                modoManualUrl = true;
                 conectarComIdEspecifico(idDaUrl.trim(), timeDaUrl);
             } else {
+                // Modo automático padrão (varredura)
                 procurarEConectarIPAtivo();
                 setInterval(procurarEConectarIPAtivo, 5000);
             }
@@ -127,20 +131,24 @@
             alterarEstadoControles(true);
 
             let term = document.getElementById('resposta-terminal');
-            term.innerHTML = `root@AMHEEX-VPS ~# <span class="txt-azul">Conectado diretamente à sandbox [${id}]</span><br>root@AMHEEX-VPS ~# `;
+            term.innerHTML = `root@AMHEEX-VPS ~# <span class="txt-azul">Conectado via URL à sandbox [${id}]</span><br>root@AMHEEX-VPS ~# `;
 
-            // Se definiu segundos na URL, atualiza o expiration no Firebase
+            // Prepara o objeto para atualizar no Firebase (action e opcionalmente expiration)
+            let dadosAtualizacao = { action: estadoActionAtual };
+            
             if (segundosExpiracao) {
-                let novoExpirationMs = new Date().getTime() + (parseInt(segundosExpiracao) * 1000);
-                fetch(`${FIREBASE_HOST}/STORAGE/${meuIdAtual}/CMD.json`, {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        expiration: novoExpirationMs,
-                        action: estadoActionAtual 
-                    })
-                }).catch(err => console.error("Erro ao definir tempo na URL:", err));
+                let segInt = parseInt(segundosExpiracao);
+                if (!isNaN(segInt)) {
+                    dadosAtualizacao.expiration = new Date().getTime() + (segInt * 1000);
+                }
             }
+
+            // Envia as configurações iniciais para o nó do Firebase
+            fetch(`${FIREBASE_HOST}/STORAGE/${meuIdAtual}/CMD.json`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(dadosAtualizacao)
+            }).catch(err => console.error("Erro ao configurar parâmetros iniciais:", err));
 
             if (intervaloMonitoramento) clearInterval(intervaloMonitoramento);
             intervaloMonitoramento = setInterval(buscarDadosFirebase, 1000);
@@ -170,6 +178,9 @@
         }
 
         function procurarEConectarIPAtivo() {
+            // Se o usuário passou ID pela URL, bloqueia a varredura automática para não conflitar
+            if (modoManualUrl) return;
+
             fetch(`${FIREBASE_HOST}/STORAGE.json`)
                 .then(response => response.json())
                 .then(data => {
