@@ -77,14 +77,19 @@
             font-weight: bold;
         }
 
+        /* Input invisível posicionado de forma a aceitar foco nativo no mobile */
         #input-invisivel {
             position: absolute;
             opacity: 0;
-            pointer-events: none;
             bottom: 0;
             left: 0;
-            height: 0;
-            width: 0;
+            height: 1px;
+            width: 1px;
+            border: none;
+            outline: none;
+            background: transparent;
+            color: transparent;
+            pointer-events: auto;
         }
     </style>
 </head>
@@ -108,9 +113,9 @@
         <div>Expira: <span id="tempo-decorrido">0</span>s</div>
     </div>
 
-    <div id="resposta-terminal" class="terminal-screen txt-branco">root@AMHEEX-VPS ~# Inicializando conexão...</div>
+    <div id="resposta-terminal" class="terminal-screen txt-branco" onclick="focarInput()">root@AMHEEX-VPS ~# Inicializando conexão...</div>
 
-    <input type="text" id="input-invisivel" autocomplete="off" disabled>
+    <input type="text" id="input-invisivel" autocomplete="off" autocapitalize="off" spellcheck="false" disabled>
 
     <script>
         const FIREBASE_HOST = "https://amheexvps-default-rtdb.firebaseio.com";
@@ -158,12 +163,13 @@
             });
 
             let inputInv = document.getElementById('input-invisivel');
+            
             inputInv.addEventListener('input', function(e) {
                 comandoAtualDigitando = e.target.value;
                 atualizarUltimaLinhaTerminal();
             });
 
-            inputInv.addEventListener('keypress', function(e) {
+            inputInv.addEventListener('keydown', function(e) {
                 if (e.key === 'Enter') {
                     e.preventDefault();
                     if (comandoAtualDigitando.trim()) {
@@ -183,7 +189,9 @@
         function alterarEstadoControles(ativo) {
             let input = document.getElementById('input-invisivel');
             input.disabled = !ativo;
-            if (ativo) input.focus();
+            if (ativo) {
+                setTimeout(focarInput, 50);
+            }
         }
 
         function mostrarModalAviso() {
@@ -197,6 +205,7 @@
         function fecharModalAviso() {
             let modal = document.getElementById('modal-aviso');
             modal.classList.remove('visivel');
+            focarInput();
         }
 
         function apagarSandboxExpirada(idParaApagar) {
@@ -250,6 +259,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: estadoActionAtual, data_hora: agoraMs })
             }).catch(err => console.error("Erro ao alterar action:", err));
+            focarInput();
         }
 
         function atualizarBotaoActionVisual() {
@@ -288,7 +298,6 @@
                             
                             let diffRestante = expirationMs ? Math.max(0, Math.floor((expirationMs - agoraMs) / 1000)) : 0;
 
-                            // Regra rigorosa: Só conecta se o tempo restante for estritamente MAIOR que 0 e action for true/válida
                             if (diffRestante <= 0 || (actVal === false || String(actVal).toLowerCase() === "false")) {
                                 if (expirationMs > 0 && agoraMs >= expirationMs) {
                                     apagarSandboxExpirada(id);
@@ -454,6 +463,8 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ comando: comandoParaEnviar, data_hora: agoraMs })
             }).catch(err => alert("Erro ao enviar comando: " + err));
+            
+            setTimeout(focarInput, 50);
         }
 
         function escapeHtml(text) {
