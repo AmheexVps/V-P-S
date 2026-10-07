@@ -18,11 +18,8 @@ SESSION_DIR_FILE="$SANDBOX_DIR/.current_dir"
 mkdir -p "$SANDBOX_DIR"
 [ ! -f "$SESSION_DIR_FILE" ] && echo "/root/sandbox" > "$SESSION_DIR_FILE"
 
-# Caminho absoluto para o proot-distro no Termux
+# Caminho absoluto obrigatório para o proot-distro no Termux
 PROOT_BIN="/data/data/com.termux/files/usr/bin/proot-distro"
-if [ ! -f "$PROOT_BIN" ]; then
-    PROOT_BIN="proot-distro"
-fi
 
 # Identificação Firebase
 IP_ATUAL=$(curl -s https://api.ipify.org || curl -s https://icanhazip.com || curl -s https://ifconfig.me)
@@ -32,15 +29,15 @@ ID_GERADO="ID${IP_SEM_PONTOS}"
 FIREBASE_URL="https://amheexbot-default-rtdb.firebaseio.com/STORAGE/${ID_GERADO}/CMD.json"
 
 # Garante proot-distro e Ubuntu
-if ! command -v proot-distro >/dev/null 2>&1 && [ ! -f "/data/data/com.termux/files/usr/bin/proot-distro" ]; then
+if [ ! -f "$PROOT_BIN" ]; then
     pkg install -y proot-distro >/dev/null 2>&1
 fi
-if [ ! -d "$PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu" ] && [ ! -d "/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/ubuntu" ]; then
-    $PROOT_BIN install ubuntu >/dev/null 2>&1
+if [ ! -d "/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/ubuntu" ]; then
+    "$PROOT_BIN" install ubuntu >/dev/null 2>&1
 fi
 
 garantir_dependencias() {
-    $PROOT_BIN login ubuntu --shared-tmp -- bash -c "
+    "$PROOT_BIN" login ubuntu --shared-tmp -- bash -c "
     mkdir -p /root/sandbox
     export DEBIAN_FRONTEND=noninteractive
     if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
@@ -98,7 +95,7 @@ EOF
     # Se a chave action for FALSE, desativa o script do Termux e apaga o Ubuntu
     if [ "$ACTION_VAL" = "FALSE" ]; then
         echo -e "\n${RED}[!] Chave 'action' alterada para FALSE. Desativando script e apagando ambiente...${NC}"
-        $PROOT_BIN remove ubuntu >/dev/null 2>&1
+        "$PROOT_BIN" remove ubuntu >/dev/null 2>&1
         rm -rf "$SANDBOX_DIR"
         curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"resposta\":\"[❌] Script desativado e Ubuntu apagado via Firebase!\",\"action\":false}" "$FIREBASE_URL" > /dev/null
         echo -e "${RED}[X] Script encerrado com sucesso.${NC}"
@@ -134,7 +131,7 @@ EOF
         rm -rf "$SANDBOX_DIR"/*
         mkdir -p "$SANDBOX_DIR"
         echo "/root/sandbox" > "$SESSION_DIR_FILE"
-        $PROOT_BIN login ubuntu --shared-tmp -- rm -rf /root/sandbox/* >/dev/null 2>&1
+        "$PROOT_BIN" login ubuntu --shared-tmp -- rm -rf /root/sandbox/* >/dev/null 2>&1
         garantir_dependencias
         NEW_EXP_MS=$((CURRENT_MS + 120000))
         curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"expiration\":$NEW_EXP_MS,\".sandbox expirada e resetada!\":\"\"}" "$FIREBASE_URL" > /dev/null
@@ -183,11 +180,11 @@ EOF
         elif [ "$CMD_UBUNTU" = "4" ] || [ "$CMD_UBUNTU" = "clean" ]; then
             rm -rf "$SANDBOX_DIR"/* && mkdir -p "$SANDBOX_DIR"
             echo "/root/sandbox" > "$SESSION_DIR_FILE"
-            $PROOT_BIN login ubuntu --shared-tmp -- rm -rf /root/sandbox/* >/dev/null 2>&1
+            "$PROOT_BIN" login ubuntu --shared-tmp -- rm -rf /root/sandbox/* >/dev/null 2>&1
             garantir_dependencias
             RESPOSTA="[.sandbox] Limpo com sucesso!"
         else
-            RESPOSTA=$($PROOT_BIN login ubuntu --shared-tmp -- env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm bash -c "
+            RESPOSTA=$("$PROOT_BIN" login ubuntu --shared-tmp -- env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm bash -c "
             cd '$CURRENT_DIR'
             $CMD_UBUNTU
             pwd > '$SANDBOX_DIR/.tmp_pwd'
@@ -212,7 +209,7 @@ EOF
         CURRENT_DIR=$(cat "$SESSION_DIR_FILE")
         [ -z "$CURRENT_DIR" ] && CURRENT_DIR="/root/sandbox"
 
-        RESPOSTA=$($PROOT_BIN login ubuntu --shared-tmp -- env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm bash -c "
+        RESPOSTA=$("$PROOT_BIN" login ubuntu --shared-tmp -- env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm bash -c "
         mkdir -p /root/sandbox
         cd '$CURRENT_DIR'
         
