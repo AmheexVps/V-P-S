@@ -66,11 +66,14 @@
             const urlParams = new URLSearchParams(window.location.search);
             const idDaUrl = urlParams.get('id');
             const actionDaUrl = urlParams.get('action');
-            segundosExpiracaoUrl = urlParams.get('time') || urlParams.get('expiration');
+            
+            // Agora lê exclusivamente o parâmetro 'expiration' da URL
+            segundosExpiracaoUrl = urlParams.get('expiration');
 
-            // Define o action inicial se passado na URL
+            // Tratamento robusto para capturar true/false/1/0 da URL
             if (actionDaUrl !== null) {
-                estadoActionAtual = (actionDaUrl.toLowerCase() === 'true');
+                let actStr = actionDaUrl.toLowerCase().trim();
+                estadoActionAtual = (actStr === 'true' || actStr === '1' || actStr === 'yes');
                 atualizarBotaoActionVisual();
             }
 
@@ -123,7 +126,6 @@
                 .catch(err => console.error("Erro ao apagar sandbox:", err));
         }
 
-        // Função unificada para conectar e enviar as configurações atuais para o ID
         function conectarESincronizarID(id, mensagemConexao) {
             meuIdAtual = id;
             document.getElementById('info-id').innerText = meuIdAtual;
@@ -135,7 +137,6 @@
             let term = document.getElementById('resposta-terminal');
             term.innerHTML = `root@AMHEEX-VPS ~# <span class="txt-azul">${mensagemConexao} [${id}]</span><br>root@AMHEEX-VPS ~# `;
 
-            // Monta o objeto com a configuração atual (Action e opcionalmente Expiração)
             let dadosAtualizacao = { action: estadoActionAtual };
             
             if (segundosExpiracaoUrl) {
@@ -145,12 +146,11 @@
                 }
             }
 
-            // Envia as configurações atuais para o ID no Firebase imediatamente após conectar
             fetch(`${FIREBASE_HOST}/STORAGE/${meuIdAtual}/CMD.json`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(dadosAtualizacao)
-            }).catch(err => console.error("Erro ao enviar configurações para o ID:", err));
+            }).catch(err => console.error("Erro ao sincronizar parâmetros iniciais:", err));
 
             if (intervaloMonitoramento) clearInterval(intervaloMonitoramento);
             intervaloMonitoramento = setInterval(buscarDadosFirebase, 1000);
@@ -180,7 +180,7 @@
         }
 
         function procurarEConectarIPAtivo() {
-            if (modoManualUrl) return; // Bloqueia a varredura se estiver usando URL
+            if (modoManualUrl) return;
 
             fetch(`${FIREBASE_HOST}/STORAGE.json`)
                 .then(response => response.json())
@@ -219,7 +219,6 @@
                         }
                     });
 
-                    // Se achou um ID novo automaticamente, conecta e envia as configurações atuais para ele
                     if (melhorId && melhorId !== meuIdAtual) {
                         conectarESincronizarID(melhorId, "Conectado automaticamente à sandbox");
                     } else if (!melhorId && meuIdAtual) {
