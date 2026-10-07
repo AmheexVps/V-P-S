@@ -25,7 +25,7 @@ if ! command -v node >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; th
     sudo apt-get install -y curl git wget unzip build-essential nodejs python3 -y >/dev/null 2>&1
 fi
 
-# Define o ambiente como rodando (true) no Firebase antes de iniciar tudo
+# Define o action como true logo no início antes de entrar no loop
 DATA_HORA_ATUAL=$(date '+%Y-%m-%d %H:%M:%S')
 curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
 
@@ -64,14 +64,14 @@ EOF
 )
 
     if [ "$ACTION_VAL" = "FALSE" ]; then
-        echo -e "\n${RED}[!] Script desativado via Firebase. Removendo ambiente...${NC}"
-        # Atualiza o status para refletir que está desligando e limpa os comandos pendentes
-        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"[!] Ambiente desativado e apagado com sucesso.\",\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
+        echo -e "\n${RED}[!] Script desativado via Firebase. Apagando ambiente...${NC}"
         
-        # Apaga o diretório do ubuntu/workspace completo
-        rm -rf "$VM_WORKSPACE"
+        # Apaga o workspace e o diretório sandbox por completo
+        rm -rf "$VM_WORKSPACE" "$SANDBOX_DIR"
         
-        echo -e "${GREEN}[✓] Workspace limpo. Encerrando.${NC}"
+        # Atualiza o status informando que foi limpo
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"[!] Ambiente desativado e apagado.\",\"data_hora\":\"$DATA_HORA_ATUAL\"}" "$FIREBASE_URL" > /dev/null
+        
         exit 0
     fi
 
