@@ -27,6 +27,56 @@
         .txt-amarelo { color: #ffeb3b; }
         .txt-azul { color: #4fc3f7; }
 
+        /* Estilo do Diálogo Flutuante */
+        #modal-aviso {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+        #modal-aviso.visivel {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .modal-conteudo {
+            background: #111;
+            border: 1px solid #ff3333;
+            padding: 20px 25px;
+            border-radius: 6px;
+            text-align: center;
+            max-width: 85%;
+            box-shadow: 0 0 15px rgba(255, 51, 51, 0.3);
+        }
+        .modal-conteudo h3 {
+            color: #ff3333;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        .modal-conteudo p {
+            color: #ccc;
+            font-size: 12px;
+            margin-bottom: 15px;
+        }
+        .modal-btn {
+            background: #ff3333;
+            color: #fff;
+            border: none;
+            padding: 6px 15px;
+            font-size: 11px;
+            cursor: pointer;
+            border-radius: 3px;
+            font-weight: bold;
+        }
+
         #input-invisivel {
             position: absolute;
             opacity: 0;
@@ -39,6 +89,15 @@
     </style>
 </head>
 <body onclick="focarInput()">
+
+    <!-- Diálogo Flutuante -->
+    <div id="modal-aviso">
+        <div class="modal-conteudo">
+            <h3>ATENÇÃO</h3>
+            <p>Nenhuma máquina encontrada ou todas expiradas!</p>
+            <button class="modal-btn" onclick="fecharModalAviso()">OK</button>
+        </div>
+    </div>
 
     <div class="termux-bar">
         <div>ID: <span id="info-id">procurando...</span></div>
@@ -71,14 +130,12 @@
             
             segundosExpiracaoUrl = urlParams.get('expiration');
 
-            // Tratamento robusto para capturar true/false/1/0 da URL
             if (actionDaUrl !== null) {
                 let actStr = actionDaUrl.toLowerCase().trim();
                 estadoActionAtual = (actStr === 'true' || actStr === '1' || actStr === 'yes');
                 atualizarBotaoActionVisual();
             }
 
-            // Correção de redimensionamento dinâmico para o teclado virtual do celular (evita quebrar a visão do CMD)
             if (window.visualViewport) {
                 window.visualViewport.addEventListener('resize', () => {
                     document.body.style.height = window.visualViewport.height + 'px';
@@ -87,14 +144,12 @@
                 });
             }
 
-            // Se houver ID na URL, ativa o modo manual imediatamente
             if (idDaUrl && idDaUrl.trim() !== "") {
                 modoManualUrl = true;
                 conectarESincronizarID(idDaUrl.trim(), "Conectado via URL à sandbox");
             } else {
-                // Modo automático padrão (varre e conecta)
                 procurarEConectarIPAtivo();
-                setInterval(procurarEConectarIPAtivo, 5000);
+                setInterval(procurarEConectarIPAtivo, 3000);
             }
             
             window.addEventListener('resize', () => {
@@ -131,6 +186,19 @@
             if (ativo) input.focus();
         }
 
+        function mostrarModalAviso() {
+            if (modoManualUrl) return;
+            let modal = document.getElementById('modal-aviso');
+            if (!modal.classList.contains('visivel')) {
+                modal.classList.add('visivel');
+            }
+        }
+
+        function fecharModalAviso() {
+            let modal = document.getElementById('modal-aviso');
+            modal.classList.remove('visivel');
+        }
+
         function apagarSandboxExpirada(idParaApagar) {
             fetch(`${FIREBASE_HOST}/STORAGE/${idParaApagar}.json`, { method: 'DELETE' })
                 .catch(err => console.error("Erro ao apagar sandbox:", err));
@@ -138,6 +206,7 @@
 
         function conectarESincronizarID(id, mensagemConexao) {
             meuIdAtual = id;
+            fecharModalAviso();
             document.getElementById('info-id').innerText = meuIdAtual;
             let statusElem = document.getElementById('status-conexao');
             statusElem.innerText = "ONLINE";
@@ -147,7 +216,6 @@
             let term = document.getElementById('resposta-terminal');
             term.innerHTML = `root@AMHEEX-VPS ~# <span class="txt-azul">${mensagemConexao} [${id}]</span><br>root@AMHEEX-VPS ~# `;
 
-            // Sincronização com dados de data, hora e milissegundos precisos na chave expiration
             let agoraMs = new Date().getTime();
             let dadosAtualizacao = { 
                 action: estadoActionAtual,
@@ -161,7 +229,6 @@
                 }
             }
 
-            // Envia explicitamente para o Firebase
             fetch(`${FIREBASE_HOST}/STORAGE/${meuIdAtual}/CMD.json`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
@@ -204,13 +271,14 @@
                 .then(data => {
                     if (!data) {
                         if (meuIdAtual) desconectarSandbox("Sem servidores");
+                        mostrarModalAviso();
                         return;
                     }
 
                     let ids = Object.keys(data);
                     let melhorId = "";
                     let menorDiferencaSegundos = 999999;
-                    let agora = new Date().getTime();
+                    let agoraMs = new Date().getTime();
 
                     ids.forEach(id => {
                         let nodo = data[id];
@@ -223,11 +291,11 @@
                                 return;
                             }
 
-                            if (expirationMs > 0 && agora >= expirationMs) {
+                            if (expirationMs > 0 && agoraMs >= expirationMs) {
                                 apagarSandboxExpirada(id);
                                 if (meuIdAtual === id) desconectarSandbox("Expirado");
                             } else {
-                                let diffRestante = expirationMs ? Math.max(0, Math.floor((expirationMs - agora) / 1000)) : 60;
+                                let diffRestante = expirationMs ? Math.max(0, Math.floor((expirationMs - agoraMs) / 1000)) : 60;
                                 if (diffRestante > 0 && diffRestante < menorDiferencaSegundos) {
                                     menorDiferencaSegundos = diffRestante;
                                     melhorId = id;
@@ -237,18 +305,22 @@
                     });
 
                     if (melhorId && melhorId !== meuIdAtual) {
-                        conectarESincronizarID(melhorId, "Conectado automaticamente à sandbox");
+                        conectarESincronizarID(melhorId, "Conectado via Modo Carreira (ID Ativo)");
                     } else if (melhorId && melhorId === meuIdAtual) {
                         fetch(`${FIREBASE_HOST}/STORAGE/${melhorId}/CMD.json`, {
                             method: 'PATCH',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action: estadoActionAtual, data_hora: agora })
+                            body: JSON.stringify({ action: estadoActionAtual, data_hora: agoraMs })
                         }).catch(err => {});
-                    } else if (!melhorId && meuIdAtual) {
-                        desconectarSandbox("Expirado/Off");
+                    } else if (!melhorId) {
+                        if (meuIdAtual) desconectarSandbox("Expirado/Off");
+                        mostrarModalAviso();
                     }
                 })
-                .catch(err => console.error("Erro ao varrer IDs:", err));
+                .catch(err => {
+                    console.error("Erro ao varrer IDs:", err);
+                    mostrarModalAviso();
+                });
         }
 
         function desconectarSandbox(motivo) {
@@ -262,6 +334,7 @@
             document.getElementById('tempo-decorrido').innerText = "0";
             alterarEstadoControles(false);
             if (intervaloMonitoramento) clearInterval(intervaloMonitoramento);
+            mostrarModalAviso();
         }
 
         function obterClasseCorTexto(texto) {
@@ -291,26 +364,30 @@
                 .then(response => response.json())
                 .then(data => {
                     if (!data) {
-                        if (!modoManualUrl) desconectarSandbox("Removido");
+                        if (!modoManualUrl) {
+                            desconectarSandbox("Removido");
+                            mostrarModalAviso();
+                        }
                         return;
                     }
 
                     if (data.action === false || String(data.action).toLowerCase() === "false") {
                         if (!modoManualUrl) {
                             desconectarSandbox("Desativado");
+                            mostrarModalAviso();
                             return;
                         }
                     }
 
                     if (data.expiration) {
                         let expirationMs = parseInt(data.expiration);
-                        let agora = new Date().getTime();
-                        let segundosRestantes = Math.max(0, Math.floor((expirationMs - agora) / 1000));
+                        let agoraMs = new Date().getTime();
+                        let segundosRestantes = Math.max(0, Math.floor((expirationMs - agoraMs) / 1000));
                         document.getElementById('tempo-decorrido').innerText = segundosRestantes;
                         
-                        // Se expirou localmente em tempo real
-                        if (agora >= expirationMs && !modoManualUrl) {
+                        if (agoraMs >= expirationMs && !modoManualUrl) {
                             desconectarSandbox("Expirado");
+                            mostrarModalAviso();
                             return;
                         }
                     }
