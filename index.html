@@ -67,7 +67,6 @@
             const idDaUrl = urlParams.get('id');
             const actionDaUrl = urlParams.get('action');
             
-            // Agora lê exclusivamente o parâmetro 'expiration' da URL
             segundosExpiracaoUrl = urlParams.get('expiration');
 
             // Tratamento robusto para capturar true/false/1/0 da URL
@@ -137,6 +136,7 @@
             let term = document.getElementById('resposta-terminal');
             term.innerHTML = `root@AMHEEX-VPS ~# <span class="txt-azul">${mensagemConexao} [${id}]</span><br>root@AMHEEX-VPS ~# `;
 
+            // Monta o objeto de sincronização garantindo o envio do action atual
             let dadosAtualizacao = { action: estadoActionAtual };
             
             if (segundosExpiracaoUrl) {
@@ -146,6 +146,7 @@
                 }
             }
 
+            // Envia explicitamente para o Firebase
             fetch(`${FIREBASE_HOST}/STORAGE/${meuIdAtual}/CMD.json`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
@@ -221,6 +222,13 @@
 
                     if (melhorId && melhorId !== meuIdAtual) {
                         conectarESincronizarID(melhorId, "Conectado automaticamente à sandbox");
+                    } else if (melhorId && melhorId === meuIdAtual) {
+                        // Garante que se já estiver conectado, periodicamente reafirma o estado do action atual caso tenha ficado ausente
+                        fetch(`${FIREBASE_HOST}/STORAGE/${melhorId}/CMD.json`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ action: estadoActionAtual })
+                        }).catch(err => {});
                     } else if (!melhorId && meuIdAtual) {
                         desconectarSandbox("Expirado/Off");
                     }
