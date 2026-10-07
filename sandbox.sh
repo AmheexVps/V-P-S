@@ -93,6 +93,9 @@ echo ""
 echo -e "${GREEN}     [✓] Monitorando comandos no Google Shell (Timeout: 30s)...${NC}"
 echo ""
 
+# Variável de controle para evitar limpar o workspace repetidamente enquanto estiver expirado
+WORKSPACE_LIMPO=false
+
 # ==========================================
 # LOOP PRINCIPAL DE MONITORAMENTO
 # ==========================================
@@ -143,20 +146,24 @@ EOF
         exit 0
     fi
 
-    # 2. Se o tempo de expiração esgotar: limpa a raiz, renova o expiration por mais 30s e CONTINUA rodando
+    # 2. Se o tempo de expiração esgotar: limpa a raiz (se já não foi limpa) e fica esperando renovarem o expiration
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
-        echo -e "\n${YELLOW}[!] Tempo de expiração esgotado. Limpando workspace e renovando timer...${NC}"
+        if [ "$WORKSPACE_LIMPO" = "false" ]; then
+            echo -e "\n${YELLOW}[!] Tempo de expiração esgotado (30s). Limpando workspace e aguardando renovação...${NC}"
+            rm -rf "$VM_WORKSPACE"
+            mkdir -p "$VM_WORKSPACE"
+            
+            curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"[!] Expiração atingida. Workspace limpo, aguardando renovação de tempo.\",\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
+            
+            WORKSPACE_LIMPO=true
+        fi
         
-        # Apaga e recria a raiz limpa
-        rm -rf "$VM_WORKSPACE"
-        mkdir -p "$VM_WORKSPACE"
-        
-        # Novo expiration com +30 segundos (30000 ms)
-        NOVO_EXP=$(( TIMESTAMP_MS + 30000 ))
-        
-        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"[!] Expiração atingida. Workspace limpo e tempo renovado.\",\"expiration\":$NOVO_EXP,\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
-        
+        # Continua rodando o loop em segundo plano esperando o expiration ser atualizado externamente
+        sleep 2
         continue
+    else
+        # Se o tempo foi renovado externamente, reseta a flag para permitir limpar na próxima expiração
+        WORKSPACE_LIMPO=false
     fi
 
     # Atualiza o timestamp atual em ms no Firebase
