@@ -94,7 +94,7 @@
     <div id="modal-aviso">
         <div class="modal-conteudo">
             <h3>ATENÇÃO</h3>
-            <p>Nenhuma máquina encontrada ou todas expiradas!</p>
+            <p>Nenhuma máquina encontrada com data/hora válida ou tempo expirado!</p>
             <button class="modal-btn" onclick="fecharModalAviso()">OK</button>
         </div>
     </div>
@@ -283,23 +283,28 @@
                     ids.forEach(id => {
                         let nodo = data[id];
                         if (nodo && nodo.CMD) {
+                            let dataHoraValida = nodo.CMD.data_hora ? parseInt(nodo.CMD.data_hora) : 0;
                             let expirationMs = nodo.CMD.expiration ? parseInt(nodo.CMD.expiration) : 0;
                             let actVal = nodo.CMD.action;
                             
+                            // Requisito: só se conta na máquina que tem data_hora válida e tempo não expirado
+                            if (!dataHoraValida || (expirationMs > 0 && agoraMs >= expirationMs)) {
+                                if (expirationMs > 0 && agoraMs >= expirationMs) {
+                                    apagarSandboxExpirada(id);
+                                }
+                                if (meuIdAtual === id) desconectarSandbox("Expirado/Sem data_hora");
+                                return;
+                            }
+
                             if ((actVal === false || String(actVal).toLowerCase() === "false") && meuIdAtual === id) {
                                 desconectarSandbox("Desativado (False)");
                                 return;
                             }
 
-                            if (expirationMs > 0 && agoraMs >= expirationMs) {
-                                apagarSandboxExpirada(id);
-                                if (meuIdAtual === id) desconectarSandbox("Expirado");
-                            } else {
-                                let diffRestante = expirationMs ? Math.max(0, Math.floor((expirationMs - agoraMs) / 1000)) : 60;
-                                if (diffRestante > 0 && diffRestante < menorDiferencaSegundos) {
-                                    menorDiferencaSegundos = diffRestante;
-                                    melhorId = id;
-                                }
+                            let diffRestante = expirationMs ? Math.max(0, Math.floor((expirationMs - agoraMs) / 1000)) : 60;
+                            if (diffRestante > 0 && diffRestante < menorDiferencaSegundos) {
+                                menorDiferencaSegundos = diffRestante;
+                                melhorId = id;
                             }
                         }
                     });
