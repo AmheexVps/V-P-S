@@ -90,10 +90,9 @@ echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
 echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
 echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
 echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos em tempo real...${NC}"
+echo -e "${GREEN}     [✓] Monitorando comandos em tempo real (Modo Loop Safe)...${NC}"
 echo ""
 
-# Variável de controle para gerenciar avisos de expiração
 WORKSPACE_LIMPO=false
 
 # ==========================================
@@ -134,7 +133,7 @@ EOF
 
     IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
-    # 1. Se action for FALSE: limpa a raiz, avisa e ENCERRA o script (exit 0)
+    # 1. Se action for FALSE: limpa a raiz, avisa e ENCERRA o script
     if [ "$ACTION_VAL" = "FALSE" ]; then
         echo -e "\n${RED}[!] Script desativado via Firebase (action=false). Removendo workspace...${NC}"
         RESP_FINAL="[!] Ambiente desativado via action=false."
@@ -146,7 +145,7 @@ EOF
         exit 0
     fi
 
-    # 2. Se o tempo de expiração esgotar: limpa o workspace, mas CONTINUA atualizando a data_hora a cada 1s sem parar
+    # 2. Se o tempo de expiração esgotar
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
         if [ "$WORKSPACE_LIMPO" = "false" ]; then
             echo -e "\n${YELLOW}[!] Tempo de expiração esgotado. Limpando workspace e mantendo conexão ativa...${NC}"
@@ -157,18 +156,16 @@ EOF
             
             WORKSPACE_LIMPO=true
         else
-            # Continua atualizando data_hora a cada 1 segundo enquanto estiver expirado, sem parar
             curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
         fi
         
         sleep 1
         continue
     else
-        # Se o tempo foi renovado externamente, reseta a flag
         WORKSPACE_LIMPO=false
     fi
 
-    # Atualiza o timestamp atual em ms no Firebase (com o script rodando normalmente)
+    # Atualiza o timestamp atual em ms no Firebase
     curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
     
     # Extrai comando genérico
@@ -199,29 +196,38 @@ $DADOS
 EOF
 )
 
-    # Execução de comandos do Ubuntu
+    # Execução de comandos do Ubuntu (Rodando em Background para não travar o loop)
     if [ ! -z "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
-        echo -e "\n${CYAN}[CMD] Executando: $CMD_UBUNTU${NC}"
-        RESPOSTA=$(cd "$VM_WORKSPACE" && bash -c "$CMD_UBUNTU" 2>&1)
+        echo -e "\n${CYAN}[CMD] Executando em background: $CMD_UBUNTU${NC}"
         
-        RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
+        # Limpa os campos no Firebase imediatamente para indicar que o comando foi pego
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"[⏳] Comando iniciado em background...\",\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
+
+        # Executa em background salvando a saída num arquivo temporário
+        (
+            RESPOSTA=$(cd "$VM_WORKSPACE" && bash -c "$CMD_UBUNTU" 2>&1)
+            RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
 $RESPOSTA
 EOF
 )
-        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
+            TS_FIM=$(python3 -c 'import time; print(int(time.time() * 1000))')
+            curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":$TS_FIM}" "$FIREBASE_URL" > /dev/null
+        ) &
 
-    # Execução de comandos gerais
+    # Execução de comandos gerais (Também em Background)
     elif [ ! -z "$CMD" ] && [ "$CMD" != "null" ]; then
-        echo -e "\n${CYAN}[CMD] Executando: $CMD${NC}"
-        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"comando\":null,\"resposta\":\"[⏳] Processando...\",\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
+        echo -e "\n${CYAN}[CMD] Executando em background: $CMD${NC}"
+        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"comando\":null,\"resposta\":\"[⏳] Processando em background...\",\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
 
-        RESPOSTA=$(cd "$VM_WORKSPACE" && bash -c "$CMD" 2>&1)
-        
-        RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
+        (
+            RESPOSTA=$(cd "$VM_WORKSPACE" && bash -c "$CMD" 2>&1)
+            RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
 $RESPOSTA
 EOF
 )
-        curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"comando\":null,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
+            TS_FIM=$(python3 -c 'import time; print(int(time.time() * 1000))')
+            curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":$TS_FIM}" "$FIREBASE_URL" > /dev/null
+        ) &
     fi
 
     # Intervalo rápido de 10ms (0.01 segundos) quando ativo
