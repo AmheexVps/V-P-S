@@ -5,7 +5,7 @@ set +H
 # CONFIGURAÇÃO DE CORES
 # ==========================================
 RED='\033[0;31m'
-GREEN='\033[0;32m'
+GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
@@ -13,10 +13,10 @@ WHITE='\033[1;37m'
 NC='\033[0m'
 
 # ==========================================
-# DIRETÓRIOS E AMBIENTE (RAIZ FIXA NA SANDBOX)
+# DIRETÓRIOS E AMBIENTE
 # ==========================================
 SANDBOX_DIR="$HOME/.sandbox"
-VM_WORKSPACE="$HOME/.sandbox/workspace"
+VM_WORKSPACE="/tmp/sandbox"
 mkdir -p "$SANDBOX_DIR" "$VM_WORKSPACE"
 
 # ==========================================
@@ -30,11 +30,29 @@ ID_GERADO="ID${IP_SEM_PONTOS}"
 FIREBASE_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${ID_GERADO}/CMD.json"
 
 # ==========================================
+# INSTALAÇÃO DE DEPENDÊNCIAS COM RESPOSTA
+# ==========================================
+export DEBIAN_FRONTEND=noninteractive
+TIMESTAMP_MS=$(python3 -c 'import time; print(int(time.time() * 1000))')
+
+if ! command -v node >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+    echo -e "\( {YELLOW}[*] Instalando dependências... \){NC}"
+    INST_LOG=$(sudo apt-get update -y 2>&1 && sudo apt-get install -y curl wget git unzip zip build-essential software-properties-common apt-transport-https ca-certificates gnupg lsb-release python3 python3-pip python3-dev nodejs npm jq net-tools iputils-ping nano screen tmux 2>&1)
+    INST_STATUS=$?
+    
+    if [ $INST_STATUS -eq 0 ]; then
+        INST_RESPOSTA="[✓] Dependências instaladas com sucesso no Ubuntu:\n$INST_LOG"
+    else
+        INST_RESPOSTA="[!] Erro ao instalar dependências (código $INST_STATUS):\n$INST_LOG"
+    fi
+else
+    INST_RESPOSTA="[✓] Dependências já estavam instaladas."
+fi
+
+# ==========================================
 # STATUS INICIAL E EXPIRAÇÃO (EM MILISSEGUNDOS)
 # ==========================================
-TIMESTAMP_MS=$(python3 -c 'import time; print(int(time.time() * 1000))')
 EXPIRATION_DEFAULT=$(( TIMESTAMP_MS + (30 * 1000) ))
-
 DADOS_INICIAIS=$(curl -s "$FIREBASE_URL")
 
 CONFIG_EXISTE=$(python3 -c '
@@ -56,7 +74,13 @@ EOF
 
 IFS=',' read -r HAS_ACTION HAS_EXPIRATION <<< "$CONFIG_EXISTE"
 
-PATCH_DATA="{\"id\":\"$ID_GERADO\",\"data_hora\":$TIMESTAMP_MS,\"resposta\":\"[✓] Sandbox nativo conectado com sucesso na raiz persistente.\""
+# Envia os dados iniciais junto com a resposta da instalação de dependências
+INST_RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
+$INST_RESPOSTA
+EOF
+)
+
+PATCH_DATA="{\"id\":\"$ID_GERADO\",\"data_hora\":$TIMESTAMP_MS,\"resposta\":$INST_RESPOSTA_ESCAPADA"
 if [ "$HAS_ACTION" != "True" ]; then
     PATCH_DATA="${PATCH_DATA},\"action\":true"
 fi
@@ -71,23 +95,23 @@ curl -s -X PATCH -d "$PATCH_DATA" "$FIREBASE_URL" > /dev/null
 # INTERFACE VISUAL
 # ==========================================
 clear
-echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / NATIVE SHELL SANDBOX${BLUE}          │${NC}"
-echo -e "${BLUE}     │                                                  │${NC}"
-echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}NATIVE LINUX${BLUE}    ${YELLOW}FIREBASE SYNC${BLUE}   │${NC}"
-echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
+echo -e "\( {BLUE}     ┌──────────────────────────────────────────────────┐ \){NC}"
+echo -e "${BLUE}     │  \( {WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX \){BLUE}          │${NC}"
+echo -e "\( {BLUE}     │                                                  │ \){NC}"
+echo -e "${BLUE}     │  \( {GREEN}● ONLINE \){BLUE}        \( {CYAN}GOOGLE SHELL \){BLUE}    \( {YELLOW}FIREBASE SYNC \){BLUE}   │${NC}"
+echo -e "\( {BLUE}     └──────────────────────────────────────────────────┘ \){NC}"
 echo ""
-echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
-echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
-echo -e "${WHITE}     🔹 Workspace  : ${CYAN}$VM_WORKSPACE${NC}"
+echo -e "${WHITE}     🔹 IP Público : ${CYAN}\( IP_ATUAL \){NC}"
+echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}\( ID_GERADO \){NC}"
+echo -e "${WHITE}     🔹 URL Status : ${CYAN}\( FIREBASE_URL \){NC}"
 echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos em tempo real (Modo Loop Safe)...${NC}"
+echo -e "\( {GREEN}     [✓] Monitorando comandos em tempo real (Modo Loop Safe)... \){NC}"
 echo ""
 
 WORKSPACE_LIMPO=false
 
 # ==========================================
-# LOOP PRINCIPAL DE MONITORAMENTO
+# LOOP PRINCIPAL DE MONITORAMENTO (SEGURANÇA: 10ms + sleep 0.01s)
 # ==========================================
 while true; do
     TIMESTAMP_MS=$(python3 -c 'import time; print(int(time.time() * 1000))')
@@ -124,20 +148,27 @@ EOF
 
     IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
-    # 1. Se action for FALSE: encerra o script
+    # 1. Se action for FALSE: limpa a raiz, avisa e ENCERRA o script
     if [ "$ACTION_VAL" = "FALSE" ]; then
-        echo -e "\n${RED}[!] Script desativado via Firebase (action=false).${NC}"
+        echo -e "\n\( {RED}[!] Script desativado via Firebase (action=false). Removendo workspace... \){NC}"
         RESP_FINAL="[!] Ambiente desativado via action=false."
         
         curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"$RESP_FINAL\",\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
+        
+        rm -rf "$VM_WORKSPACE"
+        echo -e "\( {GREEN}[✓] Workspace limpo. Encerrando. \){NC}"
         exit 0
     fi
 
     # 2. Se o tempo de expiração esgotar
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
         if [ "$WORKSPACE_LIMPO" = "false" ]; then
-            echo -e "\n${YELLOW}[!] Tempo de expiração esgotado. Mantendo conexão ativa...${NC}"
-            curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"[!] Expiração atingida, aguardando renovação de tempo.\",\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
+            echo -e "\n\( {YELLOW}[!] Tempo de expiração esgotado. Limpando workspace e mantendo conexão ativa... \){NC}"
+            rm -rf "$VM_WORKSPACE"
+            mkdir -p "$VM_WORKSPACE"
+            
+            curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"[!] Expiração atingida. Workspace limpo, aguardando renovação de tempo.\",\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
+            
             WORKSPACE_LIMPO=true
         else
             curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
@@ -166,7 +197,7 @@ $DADOS
 EOF
 )
 
-    # Extrai comando específico do Ubuntu/Linux Nativo
+    # Extrai comando específico do Ubuntu
     CMD_UBUNTU=$(python3 -c '
 import json, sys
 try:
@@ -180,9 +211,9 @@ $DADOS
 EOF
 )
 
-    # Execução de comandos (Rodando em Background na raiz fixa)
+    # Execução de comandos do Ubuntu (Rodando em Background para não travar o loop)
     if [ ! -z "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
-        echo -e "\n${CYAN}[CMD] Executando em background: $CMD_UBUNTU${NC}"
+        echo -e "\n${CYAN}[CMD] Executando em background: \( CMD_UBUNTU \){NC}"
         
         curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"[⏳] Comando iniciado em background...\",\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
 
@@ -196,8 +227,9 @@ EOF
             curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"resposta\":$RESPOSTA_ESCAPADA,\"data_hora\":$TS_FIM}" "$FIREBASE_URL" > /dev/null
         ) &
 
+    # Execução de comandos gerais (Também em Background)
     elif [ ! -z "$CMD" ] && [ "$CMD" != "null" ]; then
-        echo -e "\n${CYAN}[CMD] Executando em background: $CMD${NC}"
+        echo -e "\n${CYAN}[CMD] Executando em background: \( CMD \){NC}"
         curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"comando\":null,\"resposta\":\"[⏳] Processando em background...\",\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
 
         (
@@ -211,5 +243,6 @@ EOF
         ) &
     fi
 
+    # Intervalo rápido de 10ms (0.01 segundos) quando ativo
     sleep 0.01
 done
