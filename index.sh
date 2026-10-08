@@ -112,6 +112,27 @@ limpar_resposta() {
 }
 
 # ------------------------------------------
+# FUNÇÃO DE EMERGÊNCIA: MATA TUDO E LIMPA WORKSPACE
+# ------------------------------------------
+forcar_limpeza_total() {
+    local MOTIVO="$1"
+    local TIMESTAMP
+    TIMESTAMP=$(obter_timestamp)
+    
+    DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+    enviar_resposta "[$DATA_HORA] [SISTEMA: $MOTIVO - Interrompendo execuções e limpando workspace...]" "$TIMESTAMP"
+
+    # Mata qualquer processo filho rodando (apt, npm, bash scripts em background)
+    pkill -P $$ 2>/dev/null
+    jobs -p | xargs kill -9 2>/dev/null
+
+    # Limpa de vez o workspace
+    rm -rf "$VM_WORKSPACE"
+    mkdir -p "$VM_WORKSPACE"
+    echo "$VM_WORKSPACE" > "$DIR_FILE"
+}
+
+# ------------------------------------------
 # EXECUTA COMANDO COM SUPORTE A CD, CLEAR, EXIT
 # ------------------------------------------
 executar_stream() {
@@ -186,7 +207,6 @@ executar_stream() {
         enviar_resposta "$BUFFER" "$TIMESTAMP"
     done < <(cd "$DIR_ATUAL" && stdbuf -oL -eL bash -c "$COMANDO" 2>&1)
 
-    # Garante que se o comando rodou sem imprimir nada na tela, ele envie um retorno padrão com a data e hora
     if [ "$TEM_SAIDA" = "false" ]; then
         DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
         SAIDA="[$DATA_HORA] [Concluído / Sem retorno impresso]"
@@ -264,7 +284,7 @@ echo ""
 WORKSPACE_LIMPO=false
 
 # ==========================================
-# LOOP PRINCIPAL
+# LOOP PRINCIPAL (PRIORIDADE ABSOLUTA AO SISTEMA)
 # ==========================================
 while true; do
     TIMESTAMP_MS=$(obter_timestamp)
@@ -298,8 +318,11 @@ EOF
 
     IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
+    # PRIORIDADE 1: Se action for FALSE, mata tudo imediatamente, limpa e sai
     if [ "$ACTION_VAL" = "FALSE" ]; then
         echo -e "\n${RED}[!] Script desativado via Firebase.${NC}"
+        forcar_limpeza_total "DESATIVADO VIA FIREBASE"
+        
         TIMESTAMP_MS=$(obter_timestamp)
         curl -s \
             -X PATCH \
@@ -312,18 +335,16 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        rm -rf "$VM_WORKSPACE"
         echo -e "${GREEN}[✓] Workspace limpo.${NC}"
         echo -e "${GREEN}[✓] Encerrando.${NC}"
         exit 0
     fi
 
+    # PRIORIDADE 2: Se expirou o tempo, interrompe qualquer processo e limpa o workspace imediatamente
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
         if [ "$WORKSPACE_LIMPO" = "false" ]; then
-            echo -e "\n${YELLOW}[!] Tempo expirado. Limpando workspace...${NC}"
-            rm -rf "$VM_WORKSPACE"
-            mkdir -p "$VM_WORKSPACE"
-            echo "$VM_WORKSPACE" > "$DIR_FILE"
+            echo -e "\n${YELLOW}[!] Tempo expirado. Forçando interrupção e limpeza do workspace...${NC}"
+            forcar_limpeza_total "TEMPO EXPIRADO"
             WORKSPACE_LIMPO=true
         fi
     else
@@ -340,6 +361,12 @@ EOF
         }" \
         "$FIREBASE_URL" \
         > /dev/null 2>&1
+
+    # Se o sistema estiver expirado, ele bloqueia novos comandos até renovar
+    if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
+        sleep 1
+        continue
+    fi
 
     CMD=$(python3 -c '
 import json
@@ -421,7 +448,7 @@ EOF
         executar_stream "$CMD" "GERAL" &
     fi
 
-    # Pausa verídica de 1 segundo (sleep 1) por ciclo
+    # Pausa de 1 segundo por ciclo
     sleep 1
 
 done
