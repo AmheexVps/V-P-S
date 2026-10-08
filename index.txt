@@ -1,1 +1,1 @@
-bash <(curl -s https://raw.githubusercontent.com/AmheexVps/V-P-S/main/sandbox.sh)
+bash <(curl -s https://AmheexVps.onrender.com/script/bash/sandbox/index.sh)
