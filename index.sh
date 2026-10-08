@@ -449,6 +449,6 @@ EOF
     fi
 
     # Pausa de 1 segundo por ciclo
-    sleep 1
+    sleep 0.5
 
 done
