@@ -17,9 +17,14 @@ NC='\033[0m'
 # ==========================================
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
+DIR_FILE="$SANDBOX_DIR/current_dir"
 
 mkdir -p "$SANDBOX_DIR"
 mkdir -p "$VM_WORKSPACE"
+
+if [ ! -f "$DIR_FILE" ]; then
+    echo "$VM_WORKSPACE" > "$DIR_FILE"
+fi
 
 # ==========================================
 # IDENTIFICAÇÃO
@@ -64,7 +69,6 @@ print(json.dumps(sys.stdin.read()))
 # ENVIA SOMENTE RESPOSTA
 # ------------------------------------------
 enviar_resposta() {
-
     local TEXTO="$1"
     local TIMESTAMP="$2"
     local JSON_TEXTO
@@ -90,7 +94,6 @@ enviar_resposta() {
 # LIMPA SOMENTE A RESPOSTA
 # ------------------------------------------
 limpar_resposta() {
-
     local TIMESTAMP="$1"
 
     curl -s \
@@ -109,10 +112,9 @@ limpar_resposta() {
 }
 
 # ------------------------------------------
-# EXECUTA COMANDO COM SAÍDA EM TEMPO REAL
+# EXECUTA COMANDO COM SUPORTE A CD, CLEAR, EXIT
 # ------------------------------------------
 executar_stream() {
-
     local COMANDO="$1"
     local TIPO="$2"
 
@@ -121,43 +123,62 @@ executar_stream() {
     local DATA_HORA
     local LINHA
     local SAIDA
+    local DIR_ATUAL
 
-    # ======================================
-    # EXECUTA COM STREAM SEGURO (SEM COPROC)
-    # ======================================
-    while IFS= read -r LINHA || [ -n "$LINHA" ]; do
+    DIR_ATUAL=$(cat "$DIR_FILE")
+    if [ ! -d "$DIR_ATUAL" ]; then
+        DIR_ATUAL="$VM_WORKSPACE"
+        echo "$VM_WORKSPACE" > "$DIR_FILE"
+    fi
 
-        # Remove CR
-        LINHA="${LINHA%$'\r'}"
-
-        # ==================================
-        # DATA/HORA EXATA DA SAÍDA
-        # ==================================
-        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-
-        # ==================================
-        # FORMATO FINAL
-        # ==================================
-        SAIDA="[$DATA_HORA] $LINHA"
-
-        # ==================================
-        # GUARDA HISTÓRICO COMPLETO
-        # ==================================
-        BUFFER+="$SAIDA"$'\n'
-
-        # ==================================
-        # MOSTRA NO TERMINAL
-        # ==================================
-        printf '%s\n' "$SAIDA"
-
-        # ==================================
-        # ENVIA PARA FIREBASE IMEDIATAMENTE
-        # ==================================
+    # Tratamento para o comando CLEAR
+    if [ "$COMANDO" = "clear" ]; then
         TIMESTAMP=$(obter_timestamp)
+        enviar_resposta "[Terminal limpo]" "$TIMESTAMP"
+        return 0
+    fi
 
+    # Tratamento para EXIT / EXITE (não encerra o monitoramento, apenas finaliza a tarefa)
+    if [ "$COMANDO" = "exit" ] || [ "$COMANDO" = "exite" ]; then
+        TIMESTAMP=$(obter_timestamp)
+        enviar_resposta "[Sessão de comando encerrada]" "$TIMESTAMP"
+        return 0
+    fi
+
+    # Tratamento para o comando CD
+    if [[ "$COMANDO" =~ ^cd[[:space:]]*$ ]]; then
+        DIR_ATUAL="$VM_WORKSPACE"
+        echo "$VM_WORKSPACE" > "$DIR_FILE"
+        TIMESTAMP=$(obter_timestamp)
+        enviar_resposta "Diretório atual: $DIR_ATUAL" "$TIMESTAMP"
+        return 0
+    elif [[ "$COMANDO" =~ ^cd[[:space:]]+(.*)$ ]]; then
+        local DESTINO="${BASH_REMATCH[1]}"
+        local NOVO_DIR
+        NOVO_DIR=$(cd "$DIR_ATUAL" && eval "cd $DESTINO" && pwd)
+        
+        if [ $? -eq 0 ] && [ -d "$NOVO_DIR" ]; then
+            echo "$NOVO_DIR" > "$DIR_FILE"
+            TIMESTAMP=$(obter_timestamp)
+            enviar_resposta "Diretório atual: $NOVO_DIR" "$TIMESTAMP"
+        else
+            TIMESTAMP=$(obter_timestamp)
+            enviar_resposta "cd: $DESTINO: No such file or directory" "$TIMESTAMP"
+        fi
+        return 0
+    fi
+
+    # Execução normal dos outros comandos mantendo o diretório atual
+    while IFS= read -r LINHA || [ -n "$LINHA" ]; do
+        LINHA="${LINHA%$'\r'}"
+        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+        SAIDA="[$DATA_HORA] $LINHA"
+        BUFFER+="$SAIDA"$'\n'
+        printf '%s\n' "$SAIDA"
+        
+        TIMESTAMP=$(obter_timestamp)
         enviar_resposta "$BUFFER" "$TIMESTAMP"
-
-    done < <(cd "$VM_WORKSPACE" && stdbuf -oL -eL bash -c "$COMANDO" 2>&1)
+    done < <(cd "$DIR_ATUAL" && stdbuf -oL -eL bash -c "$COMANDO" 2>&1)
 
     return 0
 }
@@ -171,10 +192,6 @@ export DEBIAN_FRONTEND=noninteractive
 # TIMESTAMP INICIAL
 # ==========================================
 TIMESTAMP_MS=$(obter_timestamp)
-
-# ==========================================
-# EXPIRAÇÃO
-# ==========================================
 EXPIRATION_DEFAULT=$((TIMESTAMP_MS + (30 * 1000)))
 
 # ==========================================
@@ -203,35 +220,11 @@ if ! command -v node >/dev/null 2>&1 || \
 
     INST_COMANDO='
 apt-get update -y &&
-apt-get install -y \
-curl \
-wget \
-git \
-unzip \
-zip \
-build-essential \
-software-properties-common \
-apt-transport-https \
-ca-certificates \
-gnupg \
-lsb-release \
-python3 \
-python3-pip \
-python3-dev \
-nodejs \
-npm \
-jq \
-net-tools \
-iputils-ping \
-nano \
-screen \
-tmux
+apt-get install -y curl wget unzip zip build-essential software-properties-common apt-transport-https ca-certificates gnupg lsb-release python3 python3-pip python3-dev nodejs npm jq net-tools iputils-ping nano screen tmux
 '
-
     TIMESTAMP_MS=$(obter_timestamp)
     limpar_resposta "$TIMESTAMP_MS"
     executar_stream "$INST_COMANDO" "INSTALACAO"
-
 else
     echo -e "${GREEN}[✓] Dependências já instaladas.${NC}"
 fi
@@ -244,7 +237,6 @@ DADOS_INICIAIS=$(curl -s "$FIREBASE_URL")
 CONFIG_EXISTE=$(python3 -c '
 import json
 import sys
-
 try:
     data = json.loads(sys.stdin.read())
     if isinstance(data, dict):
@@ -262,11 +254,7 @@ EOF
 
 IFS=',' read -r HAS_ACTION HAS_EXPIRATION <<< "$CONFIG_EXISTE"
 
-# ==========================================
-# GARANTE ACTION / EXPIRATION
-# ==========================================
 TIMESTAMP_MS=$(obter_timestamp)
-
 PATCH_DATA="{
 \"id\":\"$ID_GERADO\",
 \"action\":true,
@@ -310,35 +298,26 @@ WORKSPACE_LIMPO=false
 # LOOP PRINCIPAL
 # ==========================================
 while true; do
-
     TIMESTAMP_MS=$(obter_timestamp)
-
     DADOS=$(curl -s "$FIREBASE_URL")
 
     PARSED_VALS=$(python3 -c '
 import json
 import sys
 import time
-
 try:
     data = json.loads(sys.stdin.read())
     current_ms = int(time.time() * 1000)
-
     if not isinstance(data, dict):
         print(f"TRUE,{current_ms + 30000}")
     else:
         act = data.get("action", True)
-        if act is False or str(act).lower() == "false":
-            act_str = "FALSE"
-        else:
-            act_str = "TRUE"
-
+        act_str = "FALSE" if (act is False or str(act).lower() == "false") else "TRUE"
         exp = data.get("expiration", current_ms + 30000)
         try:
             exp = int(exp)
         except:
             exp = current_ms + 30000
-
         print(f"{act_str},{exp}")
 except:
     current_ms = int(time.time() * 1000)
@@ -353,7 +332,6 @@ EOF
     if [ "$ACTION_VAL" = "FALSE" ]; then
         echo -e "\n${RED}[!] Script desativado via Firebase.${NC}"
         TIMESTAMP_MS=$(obter_timestamp)
-
         curl -s \
             -X PATCH \
             -H "Content-Type: application/json" \
@@ -376,6 +354,7 @@ EOF
             echo -e "\n${YELLOW}[!] Tempo expirado. Limpando workspace...${NC}"
             rm -rf "$VM_WORKSPACE"
             mkdir -p "$VM_WORKSPACE"
+            echo "$VM_WORKSPACE" > "$DIR_FILE"
 
             curl -s \
                 -X PATCH \
@@ -401,7 +380,6 @@ EOF
                 "$FIREBASE_URL" \
                 > /dev/null 2>&1
         fi
-
         sleep 1
         continue
     else
