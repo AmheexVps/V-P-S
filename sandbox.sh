@@ -2,7 +2,7 @@
 set +H
 
 # ==========================================
-# CONFIGURAÇÃO
+# CONFIGURAÇÃO DE CORES
 # ==========================================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -12,188 +12,313 @@ CYAN='\033[0;36m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
+# ==========================================
+# DIRETÓRIOS E AMBIENTE
+# ==========================================
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
 
-mkdir -p "$SANDBOX_DIR" "$VM_WORKSPACE"
+mkdir -p "$SANDBOX_DIR"
+mkdir -p "$VM_WORKSPACE"
+
+# ==========================================
+# IDENTIFICAÇÃO
+# ==========================================
+IP_ATUAL=$(curl -s --max-time 10 https://api.ipify.org)
+
+if [ -z "$IP_ATUAL" ]; then
+    IP_ATUAL=$(curl -s --max-time 10 https://icanhazip.com)
+fi
+
+if [ -z "$IP_ATUAL" ]; then
+    IP_ATUAL=$(curl -s --max-time 10 https://ifconfig.me)
+fi
+
+[ -z "$IP_ATUAL" ] && IP_ATUAL="127.0.0.1"
+
+IP_SEM_PONTOS=$(echo "$IP_ATUAL" | tr -d '.')
+ID_GERADO="ID${IP_SEM_PONTOS}"
+
+FIREBASE_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${ID_GERADO}/CMD.json"
 
 # ==========================================
 # FUNÇÕES
 # ==========================================
 
-agora_ms() {
-    python3 -c 'import time; print(int(time.time()*1000))'
+obter_timestamp() {
+    python3 -c 'import time; print(int(time.time() * 1000))'
 }
 
-json_string() {
-    python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
+# ------------------------------------------
+# Escapa texto para JSON
+# ------------------------------------------
+json_escape() {
+    python3 -c '
+import json
+import sys
+print(json.dumps(sys.stdin.read()))
+'
 }
 
-firebase_patch() {
-    local JSON_DATA="$1"
+# ------------------------------------------
+# Envia resposta completa para Firebase
+# ------------------------------------------
+enviar_resposta() {
+    local TEXTO="$1"
+    local TIMESTAMP="$2"
 
-    curl -fsS \
+    local JSON_TEXTO
+
+    JSON_TEXTO=$(printf '%s' "$TEXTO" | json_escape)
+
+    curl -s \
         --connect-timeout 5 \
-        --max-time 30 \
+        --max-time 15 \
         -X PATCH \
         -H "Content-Type: application/json" \
-        --data-binary "$JSON_DATA" \
+        -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"resposta\":$JSON_TEXTO,\"data_hora\":$TIMESTAMP}" \
         "$FIREBASE_URL" \
-        >/dev/null 2>&1 || true
+        > /dev/null 2>&1
 }
 
-enviar_resposta() {
-    local RESPOSTA="$1"
-    local TS="${2:-$(agora_ms)}"
+# ------------------------------------------
+# Executa comando transmitindo saída em tempo real
+# ------------------------------------------
+executar_stream() {
 
-    local ESCAPADA
-    ESCAPADA=$(printf '%s' "$RESPOSTA" | json_string)
+    local COMANDO="$1"
+    local TIPO="$2"
 
-    firebase_patch "{
-        \"id\":$(printf '%s' "$ID_GERADO" | json_string),
-        \"resposta\":$ESCAPADA,
-        \"data_hora\":$TS
-    }"
+    local BUFFER=""
+    local TIMESTAMP
+    local LINHA
+    local PID
+    local STATUS
+
+    echo ""
+    echo -e "${CYAN}[CMD]${NC} $COMANDO"
+    echo ""
+
+    BUFFER="[▶] Iniciando comando...
+"
+    BUFFER+="[CMD] $COMANDO
+"
+
+    TIMESTAMP=$(obter_timestamp)
+
+    enviar_resposta "$BUFFER" "$TIMESTAMP"
+
+    # ======================================
+    # COPROC
+    # ======================================
+    coproc PROCESSO {
+
+        cd "$VM_WORKSPACE" || exit 1
+
+        stdbuf -oL -eL bash -c "$COMANDO" 2>&1
+
+    }
+
+    PID="$PROCESSO_PID"
+
+    # ======================================
+    # LÊ A SAÍDA ENQUANTO O PROCESSO RODA
+    # ======================================
+    while IFS= read -r LINHA <&"${PROCESSO[0]}"; do
+
+        # Remove CR de alguns programas
+        LINHA="${LINHA%$'\r'}"
+
+        # Adiciona ao histórico completo
+        BUFFER+="$LINHA
+"
+
+        # Mostra também no terminal local
+        printf '%s\n' "$LINHA"
+
+        # ==================================
+        # ENVIA IMEDIATAMENTE PARA FIREBASE
+        # ==================================
+        TIMESTAMP=$(obter_timestamp)
+
+        enviar_resposta "$BUFFER" "$TIMESTAMP"
+
+    done
+
+    # ======================================
+    # ESPERA PROCESSO TERMINAR
+    # ======================================
+    wait "$PID"
+
+    STATUS=$?
+
+    # ======================================
+    # RESULTADO FINAL
+    # ======================================
+    if [ "$STATUS" -eq 0 ]; then
+
+        BUFFER+="
+[✓] Processo concluído com sucesso.
+[✓] Código de saída: 0
+"
+
+        echo -e "${GREEN}[✓] Processo concluído. Código: 0${NC}"
+
+    else
+
+        BUFFER+="
+[!] Processo finalizado com erro.
+[!] Código de saída: $STATUS
+"
+
+        echo -e "${RED}[!] Processo finalizado com erro. Código: $STATUS${NC}"
+
+    fi
+
+    TIMESTAMP=$(obter_timestamp)
+
+    enviar_resposta "$BUFFER" "$TIMESTAMP"
 }
 
 # ==========================================
-# IDENTIFICAÇÃO
+# EXPORTA AMBIENTE
 # ==========================================
-
-IP_ATUAL=$(
-    curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null ||
-    curl -fsS --max-time 5 https://icanhazip.com 2>/dev/null ||
-    curl -fsS --max-time 5 https://ifconfig.me 2>/dev/null
-)
-
-[ -z "$IP_ATUAL" ] && IP_ATUAL="127.0.0.1"
-
-IP_SEM_PONTOS=$(printf '%s' "$IP_ATUAL" | tr -d '.')
-ID_GERADO="ID${IP_SEM_PONTOS}"
-
-FIREBASE_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${ID_GERADO}/CMD.json"
-
-TIMESTAMP_MS=$(agora_ms)
-EXPIRATION_DEFAULT=$((TIMESTAMP_MS + 30000))
-
-# ==========================================
-# INSTALAÇÃO
-# ==========================================
-
 export DEBIAN_FRONTEND=noninteractive
 
-INST_RESPOSTA=""
+# ==========================================
+# TIMESTAMP INICIAL
+# ==========================================
+TIMESTAMP_MS=$(obter_timestamp)
 
-if ! command -v node >/dev/null 2>&1 ||
-   ! command -v python3 >/dev/null 2>&1 ||
-   ! command -v curl >/dev/null 2>&1; then
+# ==========================================
+# CRIA REGISTRO INICIAL ANTES DA INSTALAÇÃO
+# ==========================================
+EXPIRATION_DEFAULT=$((TIMESTAMP_MS + (30 * 1000)))
 
-    echo -e "${YELLOW}[*] Instalando dependências...${NC}"
+curl -s \
+    -X PATCH \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"id\":\"$ID_GERADO\",
+        \"action\":true,
+        \"expiration\":$EXPIRATION_DEFAULT,
+        \"data_hora\":$TIMESTAMP_MS,
+        \"resposta\":\"[▶] Inicializando ambiente...\"
+    }" \
+    "$FIREBASE_URL" \
+    > /dev/null 2>&1
 
-    INST_LOG=$(
-        sudo apt-get update -y 2>&1
+# ==========================================
+# INSTALAÇÃO DE DEPENDÊNCIAS
+# ==========================================
+if ! command -v node >/dev/null 2>&1 || \
+   ! command -v python3 >/dev/null 2>&1; then
 
-        UPDATE_STATUS=$?
+    echo -e "${YELLOW}[*] Dependências ausentes.${NC}"
+    echo -e "${YELLOW}[*] Iniciando instalação em tempo real...${NC}"
 
-        if [ "$UPDATE_STATUS" -eq 0 ]; then
-            sudo apt-get install -y \
-                curl \
-                wget \
-                git \
-                unzip \
-                zip \
-                build-essential \
-                software-properties-common \
-                apt-transport-https \
-                ca-certificates \
-                gnupg \
-                lsb-release \
-                python3 \
-                python3-pip \
-                python3-dev \
-                nodejs \
-                npm \
-                jq \
-                net-tools \
-                iputils-ping \
-                nano \
-                screen \
-                tmux \
-                2>&1
-        else
-            echo "[ERRO] apt-get update falhou com código $UPDATE_STATUS"
-            exit "$UPDATE_STATUS"
-        fi
-    )
+    INST_COMANDO='
+apt-get update -y &&
+apt-get install -y \
+curl \
+wget \
+git \
+unzip \
+zip \
+build-essential \
+software-properties-common \
+apt-transport-https \
+ca-certificates \
+gnupg \
+lsb-release \
+python3 \
+python3-pip \
+python3-dev \
+nodejs \
+npm \
+jq \
+net-tools \
+iputils-ping \
+nano \
+screen \
+tmux
+'
+
+    executar_stream "$INST_COMANDO" "INSTALACAO"
 
     INST_STATUS=$?
 
     if [ "$INST_STATUS" -eq 0 ]; then
-        INST_RESPOSTA="[✓] Dependências instaladas com sucesso.
 
-$INST_LOG"
+        TIMESTAMP_MS=$(obter_timestamp)
+
+        enviar_resposta \
+"[✓] Dependências instaladas com sucesso.
+[✓] Node.js: $(node --version 2>/dev/null || echo desconhecido)
+[✓] Python: $(python3 --version 2>/dev/null || echo desconhecido)
+[✓] Instalação concluída." \
+"$TIMESTAMP_MS"
+
     else
-        INST_RESPOSTA="[!] Erro ao instalar dependências.
 
-Código: $INST_STATUS
+        TIMESTAMP_MS=$(obter_timestamp)
 
-$INST_LOG"
+        enviar_resposta \
+"[!] Falha na instalação das dependências.
+[!] Código de saída: $INST_STATUS" \
+"$TIMESTAMP_MS"
     fi
 
 else
-    INST_RESPOSTA="[✓] Dependências já estavam instaladas.
 
-Node:
-$(node --version 2>&1)
+    TIMESTAMP_MS=$(obter_timestamp)
 
-Python:
-$(python3 --version 2>&1)
+    enviar_resposta \
+"[✓] Dependências já estavam instaladas.
+[✓] Node.js: $(node --version 2>/dev/null)
+[✓] Python: $(python3 --version 2>/dev/null)" \
+"$TIMESTAMP_MS"
 
-Curl:
-$(curl --version 2>&1 | head -n 1)"
 fi
 
 # ==========================================
-# CONFIGURAÇÃO INICIAL
+# OBTÉM CONFIGURAÇÃO ATUAL
 # ==========================================
+DADOS_INICIAIS=$(curl -s "$FIREBASE_URL")
 
-DADOS_INICIAIS=$(curl -fsS --max-time 10 "$FIREBASE_URL" 2>/dev/null || echo '{}')
-
-CONFIG_EXISTE=$(
-    printf '%s' "$DADOS_INICIAIS" |
-    python3 -c '
-import json,sys
+CONFIG_EXISTE=$(python3 -c '
+import json
+import sys
 
 try:
-    data=json.load(sys.stdin)
+    data = json.loads(sys.stdin.read())
 
-    if isinstance(data,dict):
-        print(
-            "True" if "action" in data else "False",
-            "True" if "expiration" in data else "False"
-        )
+    if isinstance(data, dict):
+        has_action = "action" in data
+        has_expiration = "expiration" in data
+        print(f"{has_action},{has_expiration}")
     else:
-        print("False False")
+        print("False,False")
 
-except Exception:
-    print("False False")
-'
+except:
+    print("False,False")
+' <<EOF
+$DADOS_INICIAIS
+EOF
 )
 
-read -r HAS_ACTION HAS_EXPIRATION <<< "$CONFIG_EXISTE"
+IFS=',' read -r HAS_ACTION HAS_EXPIRATION <<< "$CONFIG_EXISTE"
 
-INST_RESPOSTA_ESCAPADA=$(
-    printf '%s' "$INST_RESPOSTA" | json_string
-)
+# ==========================================
+# GARANTE ACTION E EXPIRATION
+# ==========================================
+TIMESTAMP_MS=$(obter_timestamp)
 
 PATCH_DATA="{
-    \"id\":$(printf '%s' "$ID_GERADO" | json_string),
-    \"data_hora\":$TIMESTAMP_MS,
-    \"resposta\":$INST_RESPOSTA_ESCAPADA"
-
-if [ "$HAS_ACTION" != "True" ]; then
-    PATCH_DATA="$PATCH_DATA,\"action\":true"
-fi
+\"id\":\"$ID_GERADO\",
+\"action\":true,
+\"data_hora\":$TIMESTAMP_MS
+"
 
 if [ "$HAS_EXPIRATION" != "True" ]; then
     PATCH_DATA="$PATCH_DATA,\"expiration\":$EXPIRATION_DEFAULT"
@@ -201,115 +326,107 @@ fi
 
 PATCH_DATA="$PATCH_DATA}"
 
-firebase_patch "$PATCH_DATA"
+curl -s \
+    -X PATCH \
+    -H "Content-Type: application/json" \
+    -d "$PATCH_DATA" \
+    "$FIREBASE_URL" \
+    > /dev/null 2>&1
 
 # ==========================================
-# INTERFACE
+# INTERFACE VISUAL
 # ==========================================
-
 clear
 
-echo -e "${BLUE}┌──────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}│ ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}           │${NC}"
-echo -e "${BLUE}│                                                  │${NC}"
-echo -e "${BLUE}│ ${GREEN}● ONLINE${BLUE}        ${CYAN}GOOGLE SHELL${BLUE}    ${YELLOW}FIREBASE${BLUE}       │${NC}"
-echo -e "${BLUE}└──────────────────────────────────────────────────┘${NC}"
-
+echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
+echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}          │${NC}"
+echo -e "${BLUE}     │                                                  │${NC}"
+echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}GOOGLE SHELL${BLUE}    ${YELLOW}FIREBASE SYNC${BLUE}   │${NC}"
+echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
 echo ""
-echo -e "${WHITE}IP Público : ${CYAN}$IP_ATUAL${NC}"
-echo -e "${WHITE}ID Firebase: ${CYAN}$ID_GERADO${NC}"
-echo -e "${WHITE}Firebase   : ${CYAN}$FIREBASE_URL${NC}"
+echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
+echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
+echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
 echo ""
-echo -e "${GREEN}[✓] Monitoramento iniciado.${NC}"
-echo -e "${GREEN}[✓] Resposta completa habilitada.${NC}"
+echo -e "${GREEN}     [✓] Monitorando comandos em tempo real...${NC}"
 echo ""
 
 WORKSPACE_LIMPO=false
 
 # ==========================================
-# LOOP
+# LOOP PRINCIPAL
 # ==========================================
-
 while true; do
 
-    TIMESTAMP_MS=$(agora_ms)
+    TIMESTAMP_MS=$(obter_timestamp)
 
-    DADOS=$(
-        curl -fsS \
-            --connect-timeout 5 \
-            --max-time 15 \
-            "$FIREBASE_URL" \
-            2>/dev/null || echo '{}'
-    )
+    # --------------------------------------
+    # LÊ FIREBASE
+    # --------------------------------------
+    DADOS=$(curl -s "$FIREBASE_URL")
 
-    # ======================================
-    # LÊ ESTADO
-    # ======================================
-
-    PARSED_VALS=$(
-        printf '%s' "$DADOS" |
-        python3 -c '
+    # --------------------------------------
+    # PARSE ACTION / EXPIRATION
+    # --------------------------------------
+    PARSED_VALS=$(python3 -c '
 import json
 import sys
 import time
 
 try:
-    data=json.load(sys.stdin)
+    data = json.loads(sys.stdin.read())
 
-    if not isinstance(data,dict):
-        data={}
+    current_ms = int(time.time() * 1000)
 
-    action=data.get("action",True)
+    if not isinstance(data, dict):
+        print(f"TRUE,{current_ms + 30000}")
 
-    if action is False or str(action).lower()=="false":
-        action="FALSE"
     else:
-        action="TRUE"
 
-    expiration=data.get(
-        "expiration",
-        int(time.time()*1000)+30000
-    )
+        act = data.get("action", True)
 
-    try:
-        expiration=int(expiration)
-    except:
-        expiration=int(time.time()*1000)+30000
+        if act is False or str(act).lower() == "false":
+            act_str = "FALSE"
+        else:
+            act_str = "TRUE"
 
-    print(action)
-    print(expiration)
+        exp = data.get("expiration", current_ms + 30000)
 
-except Exception:
-    print("TRUE")
-    print(int(time.time()*1000)+30000)
-'
-    )
+        try:
+            exp = int(exp)
+        except:
+            exp = current_ms + 30000
 
-    ACTION_VAL=$(printf '%s\n' "$PARSED_VALS" | sed -n '1p')
-    EXPIRATION_VAL=$(printf '%s\n' "$PARSED_VALS" | sed -n '2p')
+        print(f"{act_str},{exp}")
+
+except:
+
+    current_ms = int(time.time() * 1000)
+
+    print(f"TRUE,{current_ms + 30000}")
+
+' <<EOF
+$DADOS
+EOF
+)
+
+    IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
     # ======================================
     # ACTION FALSE
     # ======================================
-
     if [ "$ACTION_VAL" = "FALSE" ]; then
 
-        echo -e "${RED}[!] action=false recebido.${NC}"
+        echo -e "\n${RED}[!] Script desativado via Firebase.${NC}"
 
         RESP_FINAL="[!] Ambiente desativado via action=false."
 
-        enviar_resposta "$RESP_FINAL"
-
-        firebase_patch "{
-            \"action\":false,
-            \"comando\":null,
-            \"cmd_ubuntu\":null,
-            \"data_hora\":$(agora_ms)
-        }"
+        enviar_resposta "$RESP_FINAL" "$TIMESTAMP_MS"
 
         rm -rf "$VM_WORKSPACE"
 
-        echo -e "${GREEN}[✓] Workspace removido.${NC}"
+        echo -e "${GREEN}[✓] Workspace limpo.${NC}"
+        echo -e "${GREEN}[✓] Encerrando.${NC}"
 
         exit 0
     fi
@@ -317,20 +434,31 @@ except Exception:
     # ======================================
     # EXPIRAÇÃO
     # ======================================
-
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
 
         if [ "$WORKSPACE_LIMPO" = "false" ]; then
 
-            echo -e "${YELLOW}[!] Expiração atingida.${NC}"
+            echo -e "\n${YELLOW}[!] Tempo expirado. Limpando workspace...${NC}"
 
             rm -rf "$VM_WORKSPACE"
             mkdir -p "$VM_WORKSPACE"
 
             enviar_resposta \
-                "[!] Expiração atingida. Workspace limpo. Aguardando renovação."
+"[!] Expiração atingida.
+[!] Workspace limpo.
+[!] Aguardando renovação do tempo." \
+"$TIMESTAMP_MS"
 
             WORKSPACE_LIMPO=true
+
+        else
+
+            curl -s \
+                -X PATCH \
+                -H "Content-Type: application/json" \
+                -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"data_hora\":$TIMESTAMP_MS}" \
+                "$FIREBASE_URL" \
+                > /dev/null 2>&1
         fi
 
         sleep 1
@@ -339,162 +467,110 @@ except Exception:
     else
 
         WORKSPACE_LIMPO=false
+
     fi
 
     # ======================================
     # HEARTBEAT
     # ======================================
-
-    firebase_patch "{
-        \"id\":$(printf '%s' "$ID_GERADO" | json_string),
-        \"action\":true,
-        \"data_hora\":$TIMESTAMP_MS
-    }"
+    curl -s \
+        -X PATCH \
+        -H "Content-Type: application/json" \
+        -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"data_hora\":$TIMESTAMP_MS}" \
+        "$FIREBASE_URL" \
+        > /dev/null 2>&1
 
     # ======================================
-    # EXTRAI COMANDOS
+    # EXTRAI COMANDO
     # ======================================
-
-    CMD=$(
-        printf '%s' "$DADOS" |
-        python3 -c '
-import json,sys
+    CMD=$(python3 -c '
+import json
+import sys
 
 try:
-    data=json.load(sys.stdin)
-    value=data.get("comando","")
+    data = json.loads(sys.stdin.read())
+    val = data.get("comando", "")
 
-    if value is None:
-        value=""
-
-    print(value)
+    if val:
+        print(val.replace("\\n", "\n"))
 
 except:
-    print("")
-'
-    )
+    pass
 
-    CMD_UBUNTU=$(
-        printf '%s' "$DADOS" |
-        python3 -c '
-import json,sys
+' <<EOF
+$DADOS
+EOF
+)
+
+    # ======================================
+    # EXTRAI CMD UBUNTU
+    # ======================================
+    CMD_UBUNTU=$(python3 -c '
+import json
+import sys
 
 try:
-    data=json.load(sys.stdin)
-    value=data.get("cmd_ubuntu","")
+    data = json.loads(sys.stdin.read())
+    val = data.get("cmd_ubuntu", "")
 
-    if value is None:
-        value=""
-
-    print(value)
+    if val:
+        print(val.replace("\\n", "\n"))
 
 except:
-    print("")
-'
-    )
+    pass
+
+' <<EOF
+$DADOS
+EOF
+)
 
     # ======================================
     # CMD UBUNTU
     # ======================================
-
     if [ -n "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
 
-        echo -e "${CYAN}[CMD] $CMD_UBUNTU${NC}"
+        echo ""
+        echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║               NOVO COMANDO UBUNTU                       ║${NC}"
+        echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
+        echo -e "${WHITE}$CMD_UBUNTU${NC}"
+        echo ""
 
-        # IMPORTANTE:
-        # remove antes de executar para impedir
-        # execução repetida pelo polling.
+        curl -s \
+            -X PATCH \
+            -H "Content-Type: application/json" \
+            -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"[▶] Executando comando em tempo real...\",\"data_hora\":$TIMESTAMP_MS}" \
+            "$FIREBASE_URL" \
+            > /dev/null 2>&1
 
-        firebase_patch "{
-            \"comando\":null,
-            \"cmd_ubuntu\":null,
-            \"resposta\":\"[⏳] Comando recebido. Executando...\",
-            \"data_hora\":$(agora_ms)
-        }"
-
-        (
-            cd "$VM_WORKSPACE" || exit 1
-
-            # ==================================
-            # CAPTURA ABSOLUTAMENTE TUDO
-            # stdout + stderr
-            # ==================================
-
-            RESPOSTA=$(
-                bash -c "$CMD_UBUNTU" 2>&1
-            )
-
-            STATUS=$?
-
-            if [ -z "$RESPOSTA" ]; then
-                RESPOSTA="[✓] Comando concluído sem saída."
-            fi
-
-            RESPOSTA="
-[COMANDO]
-$CMD_UBUNTU
-
-[SAÍDA COMPLETA]
-$RESPOSTA
-
-[EXIT CODE]
-$STATUS"
-
-            enviar_resposta "$RESPOSTA"
-
-        ) &
+        executar_stream "$CMD_UBUNTU" "UBUNTU" &
 
     # ======================================
     # CMD GERAL
     # ======================================
-
     elif [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
 
-        echo -e "${CYAN}[CMD] $CMD${NC}"
+        echo ""
+        echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║                  NOVO COMANDO                           ║${NC}"
+        echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
+        echo -e "${WHITE}$CMD${NC}"
+        echo ""
 
-        firebase_patch "{
-            \"comando\":null,
-            \"cmd_ubuntu\":null,
-            \"resposta\":\"[⏳] Comando recebido. Executando...\",
-            \"data_hora\":$(agora_ms)
-        }"
+        curl -s \
+            -X PATCH \
+            -H "Content-Type: application/json" \
+            -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"comando\":null,\"resposta\":\"[▶] Executando comando em tempo real...\",\"data_hora\":$TIMESTAMP_MS}" \
+            "$FIREBASE_URL" \
+            > /dev/null 2>&1
 
-        (
-            cd "$VM_WORKSPACE" || exit 1
-
-            RESPOSTA=$(
-                bash -c "$CMD" 2>&1
-            )
-
-            STATUS=$?
-
-            if [ -z "$RESPOSTA" ]; then
-                RESPOSTA="[✓] Comando concluído sem saída."
-            fi
-
-            RESPOSTA="
-[COMANDO]
-$CMD
-
-[SAÍDA COMPLETA]
-$RESPOSTA
-
-[EXIT CODE]
-$STATUS"
-
-            enviar_resposta "$RESPOSTA"
-
-        ) &
+        executar_stream "$CMD" "GERAL" &
 
     fi
 
     # ======================================
-    # POLLING
+    # LOOP
     # ======================================
-
-    # 500ms evita dezenas/centenas de requisições
-    # por segundo e ainda mantém resposta rápida.
-
-    sleep 0.5
+    sleep 0.01
 
 done
