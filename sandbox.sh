@@ -30,20 +30,29 @@ ID_GERADO="ID${IP_SEM_PONTOS}"
 FIREBASE_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${ID_GERADO}/CMD.json"
 
 # ==========================================
-# INSTALAÇÃO DE DEPENDÊNCIAS
+# INSTALAÇÃO DE DEPENDÊNCIAS COM RESPOSTA
 # ==========================================
 export DEBIAN_FRONTEND=noninteractive
+TIMESTAMP_MS=$(python3 -c 'import time; print(int(time.time() * 1000))')
+
 if ! command -v node >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
-    sudo apt-get update -y >/dev/null 2>&1
-    sudo apt-get install -y curl git wget unzip build-essential nodejs python3 -y >/dev/null 2>&1
+    echo -e "${YELLOW}[*] Instalando dependências...${NC}"
+    INST_LOG=$(sudo apt-get update -y 2>&1 && sudo apt-get install -y curl wget git unzip zip build-essential software-properties-common apt-transport-https ca-certificates gnupg lsb-release python3 python3-pip python3-dev nodejs npm jq net-tools iputils-ping nano screen tmux 2>&1)
+    INST_STATUS=$?
+    
+    if [ $INST_STATUS -eq 0 ]; then
+        INST_RESPOSTA="[✓] Dependências instaladas com sucesso no Ubuntu:\n$INST_LOG"
+    else
+        INST_RESPOSTA="[!] Erro ao instalar dependências (código $INST_STATUS):\n$INST_LOG"
+    fi
+else
+    INST_RESPOSTA="[✓] Dependências já estavam instaladas."
 fi
 
 # ==========================================
 # STATUS INICIAL E EXPIRAÇÃO (EM MILISSEGUNDOS)
 # ==========================================
-TIMESTAMP_MS=$(python3 -c 'import time; print(int(time.time() * 1000))')
 EXPIRATION_DEFAULT=$(( TIMESTAMP_MS + (30 * 1000) ))
-
 DADOS_INICIAIS=$(curl -s "$FIREBASE_URL")
 
 CONFIG_EXISTE=$(python3 -c '
@@ -65,7 +74,13 @@ EOF
 
 IFS=',' read -r HAS_ACTION HAS_EXPIRATION <<< "$CONFIG_EXISTE"
 
-PATCH_DATA="{\"id\":\"$ID_GERADO\",\"data_hora\":$TIMESTAMP_MS"
+# Envia os dados iniciais junto com a resposta da instalação de dependências
+INST_RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
+$INST_RESPOSTA
+EOF
+)
+
+PATCH_DATA="{\"id\":\"$ID_GERADO\",\"data_hora\":$TIMESTAMP_MS,\"resposta\":$INST_RESPOSTA_ESCAPADA"
 if [ "$HAS_ACTION" != "True" ]; then
     PATCH_DATA="${PATCH_DATA},\"action\":true"
 fi
@@ -200,10 +215,8 @@ EOF
     if [ ! -z "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
         echo -e "\n${CYAN}[CMD] Executando em background: $CMD_UBUNTU${NC}"
         
-        # Limpa os campos no Firebase imediatamente para indicar que o comando foi pego
         curl -s -X PATCH -d "{\"id\":\"$ID_GERADO\",\"action\":true,\"comando\":null,\"cmd_ubuntu\":null,\"resposta\":\"[⏳] Comando iniciado em background...\",\"data_hora\":$TIMESTAMP_MS}" "$FIREBASE_URL" > /dev/null
 
-        # Executa em background salvando a saída num arquivo temporário
         (
             RESPOSTA=$(cd "$VM_WORKSPACE" && bash -c "$CMD_UBUNTU" 2>&1)
             RESPOSTA_ESCAPADA=$(python3 -c 'import json, sys; print(json.dumps(sys.stdin.read()))' <<EOF
