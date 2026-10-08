@@ -134,14 +134,16 @@ executar_stream() {
     # Tratamento para o comando CLEAR
     if [ "$COMANDO" = "clear" ]; then
         TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "[Terminal limpo]" "$TIMESTAMP"
+        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+        enviar_resposta "[$DATA_HORA] [Terminal limpo]" "$TIMESTAMP"
         return 0
     fi
 
     # Tratamento para EXIT / EXITE
     if [ "$COMANDO" = "exit" ] || [ "$COMANDO" = "exite" ]; then
         TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "[Sessão de comando encerrada]" "$TIMESTAMP"
+        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+        enviar_resposta "[$DATA_HORA] [Sessão de comando encerrada]" "$TIMESTAMP"
         return 0
     fi
 
@@ -150,26 +152,30 @@ executar_stream() {
         DIR_ATUAL="$VM_WORKSPACE"
         echo "$VM_WORKSPACE" > "$DIR_FILE"
         TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "Diretório atual: $DIR_ATUAL" "$TIMESTAMP"
+        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+        enviar_resposta "[$DATA_HORA] Diretório atual: $DIR_ATUAL" "$TIMESTAMP"
         return 0
     elif [[ "$COMANDO" =~ ^cd[[:space:]]+(.*)$ ]]; then
         local DESTINO="${BASH_REMATCH[1]}"
         local NOVO_DIR
         NOVO_DIR=$(cd "$DIR_ATUAL" && eval "cd $DESTINO" && pwd)
         
+        TIMESTAMP=$(obter_timestamp)
+        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
         if [ $? -eq 0 ] && [ -d "$NOVO_DIR" ]; then
             echo "$NOVO_DIR" > "$DIR_FILE"
-            TIMESTAMP=$(obter_timestamp)
-            enviar_resposta "Diretório atual: $NOVO_DIR" "$TIMESTAMP"
+            enviar_resposta "[$DATA_HORA] Diretório atual: $NOVO_DIR" "$TIMESTAMP"
         else
-            TIMESTAMP=$(obter_timestamp)
-            enviar_resposta "cd: $DESTINO: No such file or directory" "$TIMESTAMP"
+            enviar_resposta "[$DATA_HORA] cd: $DESTINO: No such file or directory" "$TIMESTAMP"
         fi
         return 0
     fi
 
+    local TEM_SAIDA=false
+
     # Execução normal dos outros comandos mantendo o diretório atual
     while IFS= read -r LINHA || [ -n "$LINHA" ]; do
+        TEM_SAIDA=true
         LINHA="${LINHA%$'\r'}"
         DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
         SAIDA="[$DATA_HORA] $LINHA"
@@ -179,6 +185,14 @@ executar_stream() {
         TIMESTAMP=$(obter_timestamp)
         enviar_resposta "$BUFFER" "$TIMESTAMP"
     done < <(cd "$DIR_ATUAL" && stdbuf -oL -eL bash -c "$COMANDO" 2>&1)
+
+    # Garante que se o comando rodou sem imprimir nada na tela, ele envie um retorno padrão com a data e hora
+    if [ "$TEM_SAIDA" = "false" ]; then
+        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+        SAIDA="[$DATA_HORA] [Concluído / Sem retorno impresso]"
+        TIMESTAMP=$(obter_timestamp)
+        enviar_resposta "$SAIDA" "$TIMESTAMP"
+    fi
 
     return 0
 }
