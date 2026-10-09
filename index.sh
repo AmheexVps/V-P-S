@@ -29,7 +29,7 @@ echo -e "${GREEN}[✓] Configuração automática definida: ${QTD_SANDBOX} sandb
 sleep 1
 
 # ==========================================
-# DIRETÓRIOS E AMBIENTE
+# DIRETÓRIOS E AMBIENTE (SUPORTE LINUX)
 # ==========================================
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
@@ -58,8 +58,16 @@ FIREBASE_LISTA_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/active
 
 export DEBIAN_FRONTEND=noninteractive
 
-if ! command -v tmux >/dev/null 2>&1; then
-    apt-get update -y && apt-get install -y tmux >/dev/null 2>&1
+# Garantir dependências essenciais no Linux (tmux e curl)
+if ! command -v tmux >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+    echo -e "${YELLOW}[!] Instalando dependências necessárias (tmux, curl)...${NC}"
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update -y && apt-get install -y tmux curl python3 >/dev/null 2>&1
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y tmux curl python3 >/dev/null 2>&1
+    elif command -v pacman >/dev/null 2>&1; then
+        pacman -Sy --noconfirm tmux curl python3 >/dev/null 2>&1
+    fi
 fi
 
 # Arrays globais para rastrear os IDs fixos e sessões individualmente
@@ -89,7 +97,6 @@ iniciar_todas_sandboxes() {
         
         ARRAY_SANDBOX_IDS+=("$SANDBOX_ID")
 
-        # Inicia com expiration = 0 (aguardando o sistema externo definir o tempo)
         local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SANDBOX_ID}/CMD.json"
         curl -s \
             -X PATCH \
@@ -178,7 +185,6 @@ limpar_resposta() {
         > /dev/null 2>&1
 }
 
-# Reseta APENAS a sandbox específica MANTENDO O MESMO ID e definindo expiration 0
 reiniciar_sandbox_isolada() {
     local INDEX="$1"
     local SB_ID="${ARRAY_SANDBOX_IDS[$INDEX]}"
@@ -190,7 +196,6 @@ reiniciar_sandbox_isolada() {
 
     echo -e "\n${YELLOW}[!] Sandbox $SB_NUM ($SB_ID) expirou. Resetando e aguardando novo expiration...${NC}"
 
-    # Mata apenas se a sessão tmux existir e a recria limpa
     if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
     fi
@@ -198,7 +203,6 @@ reiniciar_sandbox_isolada() {
     tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
     tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
 
-    # Reseta o nó no Firebase MANTENDO O MESMO ID fixo e definindo expiration = 0
     local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SB_ID}/CMD.json"
     curl -s \
         -X PATCH \
@@ -214,7 +218,6 @@ reiniciar_sandbox_isolada() {
         > /dev/null 2>&1
 }
 
-# Inicializa todas as sandboxes com IDs fixos no começo
 iniciar_todas_sandboxes
 
 # ==========================================
@@ -248,7 +251,6 @@ $SB_DADOS
 EOF
 )
 
-        # Só expira se expiration for maior que 0 E o tempo atual passou do expiration
         if [ "$EXPIRATION_VAL" -gt 0 ] && [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
             reiniciar_sandbox_isolada "$i"
             continue
@@ -280,6 +282,9 @@ EOF
 )
 
         if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
+            # Executa o clear no terminal do script antes de processar/executar o comando
+            clear
+
             limpar_resposta "$SB_ID" "$TIMESTAMP_MS"
 
             curl -s \
@@ -290,7 +295,7 @@ EOF
                     \"comando\":null,
                     \"data_hora\":$TIMESTAMP_MS
                 }" \
-                "$SB_FIREBASE_URL" \
+                "$FIREBASE_SB_URL" \
                 > /dev/null 2>&1
 
             echo -e "${GREEN}[✓] Comando executado na partição isolada ${SB_ID}.${NC}"
