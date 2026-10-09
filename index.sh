@@ -74,7 +74,7 @@ enviar_resposta() {
     local TIMESTAMP="$2"
     local JSON_TEXTO
 
-    JSON_TEXTO=$(printf '\%s' "$TEXTO" | json_escape)
+    JSON_TEXTO=$(printf '%s' "$TEXTO" | json_escape)
 
     curl -s \
         --connect-timeout 2 \
@@ -113,21 +113,25 @@ limpar_resposta() {
 }
 
 # ------------------------------------------
-# FUNÇÃO DE EMERGÊNCIA: MATA TUDO E LIMPA WORKSPACE
+# FUNÇÃO DE EMERGÊNCIA / EXPIRAÇÃO: MATA TUDO E APAGA TUDO
 # ------------------------------------------
 forcar_limpeza_total() {
     local MOTIVO="$1"
     local TIMESTAMP
     TIMESTAMP=$(obter_timestamp)
     
-    enviar_resposta "[SISTEMA: $MOTIVO - Interrompendo execuções e limpando workspace...]" "$TIMESTAMP"
+    enviar_resposta "[SISTEMA: $MOTIVO - Encerrando sessão tmux e limpando arquivos...]" "$TIMESTAMP"
 
-    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null     pkill -P $$ 2>/dev/null
+    # Destroi a sessão tmux
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
+
+    # Mata processos filhos
+    pkill -P $$ 2>/dev/null
     jobs -p | xargs kill -9 2>/dev/null
 
+    # Remove todos os arquivos do workspace e sandbox de vez
     rm -rf "$VM_WORKSPACE"
-    mkdir -p "$VM_WORKSPACE"
-    echo "$VM_WORKSPACE" > "$DIR_FILE"
+    rm -rf "$SANDBOX_DIR"
 }
 
 # ==========================================
@@ -170,19 +174,17 @@ curl -s \
 clear
 
 echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}     │${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}          │${NC}"
+echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}          │${NC}"
 echo -e "${BLUE}     │                                                  │${NC}"
-echo -e "${BLUE}     │${GREEN}● ONLINE${BLUE}${CYAN}GOOGLE SHELL${BLUE}${YELLOW}TMUX SESSÃO ÚNICA${BLUE} │${NC}"
+echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}GOOGLE SHELL${BLUE}    ${YELLOW}TMUX SESSÃO ÚNICA${BLUE} │${NC}"
 echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
 echo ""
 echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
 echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
 echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
 echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos sem data/hora (100ms)...${NC}"
+echo -e "${GREEN}     [✓] Monitorando comandos e expiração (100ms)...${NC}"
 echo ""
-
-WORKSPACE_LIMPO=false
 
 # ==========================================
 # LOOP PRINCIPAL (100ms)
@@ -211,4 +213,114 @@ try:
         print(f"{act_str},{exp}")
 except:
     current_ms = int(time.time() * 1000)
-    print(f"TRUE,{current_ms + 3000
+    print(f"TRUE,{current_ms + 30000}")
+' <<EOF
+$DADOS
+EOF
+)
+
+    IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
+
+    # Se action for FALSE ou o tempo tiver expirado, limpa tudo e encerra
+    if [ "$ACTION_VAL" = "FALSE" ] || [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
+        MOTIVO="DESATIVADO VIA FIREBASE"
+        [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ] && MOTIVO="TEMPO EXPIRADO"
+
+        forcar_limpeza_total "$MOTIVO"
+        
+        TIMESTAMP_MS=$(obter_timestamp)
+        curl -s \
+            -X PATCH \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"id\":\"$ID_GERADO\",
+                \"action\":false,
+                \"data_hora\":$TIMESTAMP_MS
+            }" \
+            "$FIREBASE_URL" \
+            > /dev/null 2>&1
+
+        echo -e "\n${RED}[!] Sessão encerrada, arquivos limpos e script finalizado.${NC}"
+        exit 0
+    fi
+
+    # Atualiza o data_hora a cada ciclo no loop principal
+    curl -s \
+        -X PATCH \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"id\":\"$ID_GERADO\",
+            \"data_hora\":$TIMESTAMP_MS
+        }" \
+        "$FIREBASE_URL" \
+        > /dev/null 2>&1
+
+    CMD=$(python3 -c '
+import json
+import sys
+try:
+    data = json.loads(sys.stdin.read())
+    val = data.get("comando", "")
+    if val:
+        print(val)
+except:
+    pass
+' <<EOF
+$DADOS
+EOF
+)
+
+    if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
+        TIMESTAMP_MS=$(obter_timestamp)
+        limpar_resposta "$TIMESTAMP_MS"
+
+        # Limpa o comando no Firebase imediatamente
+        curl -s \
+            -X PATCH \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"id\":\"$ID_GERADO\",
+                \"comando\":null,
+                \"data_hora\":$TIMESTAMP_MS
+            }" \
+            "$FIREBASE_URL" \
+            > /dev/null 2>&1
+
+        echo -e "${GREEN}[✓] Comando executado na sessão contínua.${NC}"
+
+        if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+            tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
+        fi
+
+        # Envia o comando para a sessão tmux
+        tmux send-keys -t "$TMUX_SESSION" "$CMD" Enter
+        
+        sleep 0.3
+
+        # Captura o painel e limpa os prompts mantendo o resultado puro
+        SAIDA_LIMPA=$(python3 -c '
+import subprocess
+import re
+
+try:
+    out = subprocess.check_output(["tmux", "capture-pane", "-t", "sandbox_ubuntu", "-p", "-S", "-30"]).decode("utf-8")
+    linhas = out.splitlines()
+    
+    linhas_limpas = []
+    for l in linhas:
+        if re.match(r"^(/tmp/sandbox#|root@.*#)\s*$", l.strip()):
+            continue
+        linhas_limpas.append(l)
+        
+    print("\n".join(linhas_limpas).strip())
+except Exception as e:
+    print(str(e))
+')
+
+        TIMESTAMP_MS=$(obter_timestamp)
+        enviar_resposta "$SAIDA_LIMPA" "$TIMESTAMP_MS"
+    fi
+
+    sleep 0.1
+
+done
