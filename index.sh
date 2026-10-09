@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/init/env bash
 set +H
 
 # ==========================================
@@ -17,58 +17,29 @@ NC='\033[0m'
 # ==========================================
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
+DIR_FILE="$SANDBOX_DIR/current_dir"
 TMUX_SESSION="sandbox_session"
-DASHBOARD_SCRIPT="$SANDBOX_DIR/vps_panel.sh"
 
 mkdir -p "$SANDBOX_DIR"
 mkdir -p "$VM_WORKSPACE"
 
-# ==========================================
-# CRIANDO O SCRIPT DO PAINEL UBUNTU (VPS)
-# ==========================================
-cat << 'EOF' > "$DASHBOARD_SCRIPT"
-#!/bin/bash
-clear
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-WHITE='\033[1;37m'
-NC='\033[0m'
-
-show_menu() {
-    clear
-    echo ""
-    echo -e "${BLUE}                         INFINITE LABS${NC}"
-    echo -e "${BLUE}                    ─────────────────────${NC}"
-    echo -e "${WHITE}                      VPS CONTROL PANEL${NC}"
-    echo ""
-    echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
-    echo -e "${BLUE}     │  ${WHITE}SYSTEM${BLUE}                                          │${NC}"
-    echo -e "${BLUE}     │                                                  │${NC}"
-    echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}QEMU/KVM${BLUE}        ${YELLOW}TCP NETWORK${BLUE}     │${NC}"
-    echo -e "${BLUE}     │                                                  │${NC}"
-    echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
-    echo ""
-    echo -e "${BLUE}     ┌─────────────────── ${WHITE}MAIN MENU${BLUE} ─────────────────────┐${NC}"
-    echo -e "${BLUE}     │   ${CYAN}01${BLUE}  ›  ${WHITE}CREATE VPS${BLUE}                              │${NC}"
-    echo -e "${BLUE}     │   ${CYAN}02${BLUE}  ›  ${WHITE}RESTART VPS${BLUE}                             │${NC}"
-    echo -e "${BLUE}     │   ${CYAN}03${BLUE}  ›  ${WHITE}NETWORK${BLUE}                                 │${NC}"
-    echo -e "${BLUE}     │   ${CYAN}04${BLUE}  ›  ${WHITE}CLEANUP${BLUE}                                 │${NC}"
-    echo -e "${BLUE}     │   ${CYAN}05${BLUE}  ›  ${WHITE}EXIT${BLUE}                                    │${NC}"
-    echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
-    echo ""
-}
-show_menu
-EOF
-chmod +x "$DASHBOARD_SCRIPT"
+if [ ! -f "$DIR_FILE" ]; then
+    echo "$VM_WORKSPACE" > "$DIR_FILE"
+fi
 
 # ==========================================
 # IDENTIFICAÇÃO
 # ==========================================
 IP_ATUAL=$(curl -s --max-time 10 https://api.ipify.org)
-[ -z "$IP_ATUAL" ] && IP_ATUAL=$(curl -s --max-time 10 https://icanhazip.com)
+
+if [ -z "$IP_ATUAL" ]; then
+    IP_ATUAL=$(curl -s --max-time 10 https://icanhazip.com)
+fi
+
+if [ -z "$IP_ATUAL" ]; then
+    IP_ATUAL=$(curl -s --max-time 10 https://ifconfig.me)
+fi
+
 [ -z "$IP_ATUAL" ] && IP_ATUAL="127.0.0.1"
 
 IP_SEM_PONTOS=$(echo "$IP_ATUAL" | tr -d '.')
@@ -79,10 +50,14 @@ FIREBASE_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${ID_GERADO}
 # ==========================================
 # FUNÇÕES
 # ==========================================
+
 obter_timestamp() {
     python3 -c 'import time; print(int(time.time() * 1000))'
 }
 
+# ------------------------------------------
+# ESCAPA TEXTO PARA JSON
+# ------------------------------------------
 json_escape() {
     python3 -c '
 import json
@@ -91,6 +66,9 @@ print(json.dumps(sys.stdin.read()))
 '
 }
 
+# ------------------------------------------
+# ENVIA SOMENTE RESPOSTA
+# ------------------------------------------
 enviar_resposta() {
     local TEXTO="$1"
     local TIMESTAMP="$2"
@@ -113,8 +91,12 @@ enviar_resposta() {
         > /dev/null 2>&1
 }
 
+# ------------------------------------------
+# LIMPA SOMENTE A RESPOSTA
+# ------------------------------------------
 limpar_resposta() {
     local TIMESTAMP="$1"
+
     curl -s \
         --connect-timeout 5 \
         --max-time 15 \
@@ -130,20 +112,31 @@ limpar_resposta() {
         > /dev/null 2>&1
 }
 
+# ------------------------------------------
+# INICIALIZA OU RECRIA SESSÃO TMUX LIMPA
+# ------------------------------------------
 inicializar_tmux() {
-    if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-        # Cria a sessão permanentemente em /tmp/sandbox sem alterar o diretório a cada comando
-        tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
-        tmux send-keys -t "$TMUX_SESSION" "bash $DASHBOARD_SCRIPT" C-m
+    local DIR_INICIAL
+    DIR_INICIAL=$(cat "$DIR_FILE")
+    [ ! -d "$DIR_INICIAL" ] && DIR_INICIAL="$VM_WORKSPACE"
+
+    # Se a sessão já existe, derruba para garantir um ambiente limpo sem processos presos
+    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+        tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
     fi
+    
+    tmux new-session -d -s "$TMUX_SESSION" -c "$DIR_INICIAL"
 }
 
+# ------------------------------------------
+# EXECUTA COMANDO COM STREAM A CADA 1S
+# ------------------------------------------
 executar_stream() {
     local COMANDO="$1"
+    local TIPO="$2"
     local TIMESTAMP
 
-    inicializar_tmux
-
+    # Tratamento para EXIT / EXITE
     if [ "$COMANDO" = "exit" ] || [ "$COMANDO" = "exite" ]; then
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
         TIMESTAMP=$(obter_timestamp)
@@ -151,29 +144,52 @@ executar_stream() {
         return 0
     fi
 
-    # Envia o comando para o tmux de forma invisível em background
+    # Recria a sessão tmux do zero para matar qualquer comando anterior que estivesse rodando
+    inicializar_tmux
+
+    # Envia o comando real para o tmux
     tmux send-keys -t "$TMUX_SESSION" "$COMANDO" C-m
     
-    sleep 0.8
+    # Aguarda um instante inicial para o comando renderizar
+    sleep 0.5
 
-    # Captura a tela atual do painel do tmux
-    local SAIDA
-    SAIDA=$(tmux capture-pane -t "$TMUX_SESSION" -p)
+    # Loop contínuo para atualizar a view no Firebase a cada 1s
+    while tmux has-session -t "$TMUX_SESSION" 2>/dev/null; do
+        # Captura a tela atual do painel do Tmux
+        local SAIDA
+        SAIDA=$(tmux capture-pane -t "$TMUX_SESSION" -p)
 
-    TIMESTAMP=$(obter_timestamp)
-    enviar_resposta "$SAIDA" "$TIMESTAMP"
+        # Atualiza o diretório atual persistido
+        local DIR_ATUAL
+        DIR_ATUAL=$(tmux display-message -p -t "$TMUX_SESSION" "#{pane_current_path}")
+        if [ -d "$DIR_ATUAL" ]; then
+            echo "$DIR_ATUAL" > "$DIR_FILE"
+        fi
+
+        # Envia a resposta atualizada para o Firebase
+        TIMESTAMP=$(obter_timestamp)
+        enviar_resposta "$SAIDA" "$TIMESTAMP"
+
+        sleep 1
+    done
 
     return 0
 }
 
 # ==========================================
-# AMBIENTE & INICIALIZAÇÃO
+# AMBIENTE
 # ==========================================
 export DEBIAN_FRONTEND=noninteractive
 
+# ==========================================
+# TIMESTAMP INICIAL
+# ==========================================
 TIMESTAMP_MS=$(obter_timestamp)
 EXPIRATION_DEFAULT=$((TIMESTAMP_MS + (30 * 1000)))
 
+# ==========================================
+# REGISTRO INICIAL
+# ==========================================
 curl -s \
     -X PATCH \
     -H "Content-Type: application/json" \
@@ -186,25 +202,47 @@ curl -s \
     "$FIREBASE_URL" \
     > /dev/null 2>&1
 
+# ==========================================
+# INSTALAÇÃO DE DEPENDÊNCIAS
+# ==========================================
+if ! command -v node >/dev/null 2>&1 || \
+   ! command -v python3 >/dev/null 2>&1 || \
+   ! command -v tmux >/dev/null 2>&1; then
+
+    INST_COMANDO='
+apt-get update -y &&
+apt-get install -y curl wget unzip zip build-essential software-properties-common apt-transport-https ca-certificates gnupg lsb-release python3 python3-pip python3-dev nodejs npm jq net-tools iputils-ping nano screen tmux
+'
+    TIMESTAMP_MS=$(obter_timestamp)
+    limpar_resposta "$TIMESTAMP_MS"
+    eval "$INST_COMANDO"
+fi
+
 inicializar_tmux
 
+# ==========================================
+# INTERFACE VISUAL
+# ==========================================
 clear
+
 echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
 echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX (TMUX)${BLUE}     │${NC}"
-echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}UBUNTU VPS PANEL${BLUE}          │${NC}"
+echo -e "${BLUE}     │                                                  │${NC}"
+echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}GOOGLE SHELL${BLUE}    ${YELLOW}FIREBASE SYNC${BLUE}   │${NC}"
 echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
 echo ""
 echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
 echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
+echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
 echo -e "${WHITE}     🔹 Tmux Sessão: ${CYAN}$TMUX_SESSION${NC}"
 echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos e painel VPS em tempo real...${NC}"
+echo -e "${GREEN}     [✓] Monitorando comandos em tempo real...${NC}"
 echo ""
 
 WORKSPACE_LIMPO=false
 
 # ==========================================
-# LOOP PRINCIPAL DE MONITORAMENTO FIREBASE
+# LOOP PRINCIPAL
 # ==========================================
 while true; do
     TIMESTAMP_MS=$(obter_timestamp)
@@ -239,6 +277,18 @@ EOF
     IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
     if [ "$ACTION_VAL" = "FALSE" ]; then
+        TIMESTAMP_MS=$(obter_timestamp)
+        curl -s \
+            -X PATCH \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"id\":\"$ID_GERADO\",
+                \"action\":false,
+                \"data_hora\":$TIMESTAMP_MS
+            }" \
+            "$FIREBASE_URL" \
+            > /dev/null 2>&1
+
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
         rm -rf "$VM_WORKSPACE"
         exit 0
@@ -249,6 +299,7 @@ EOF
             tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
             rm -rf "$VM_WORKSPACE"
             mkdir -p "$VM_WORKSPACE"
+            echo "$VM_WORKSPACE" > "$DIR_FILE"
             inicializar_tmux
             WORKSPACE_LIMPO=true
         fi
@@ -299,6 +350,7 @@ EOF
     if [ -n "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
         TIMESTAMP_MS=$(obter_timestamp)
         limpar_resposta "$TIMESTAMP_MS"
+
         curl -s \
             -X PATCH \
             -H "Content-Type: application/json" \
@@ -311,11 +363,12 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        executar_stream "$CMD_UBUNTU" &
+        executar_stream "$CMD_UBUNTU" "UBUNTU" &
 
     elif [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
         TIMESTAMP_MS=$(obter_timestamp)
         limpar_resposta "$TIMESTAMP_MS"
+
         curl -s \
             -X PATCH \
             -H "Content-Type: application/json" \
@@ -327,8 +380,9 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        executar_stream "$CMD" &
+        executar_stream "$CMD" "GERAL" &
     fi
 
     sleep 1
+
 done
