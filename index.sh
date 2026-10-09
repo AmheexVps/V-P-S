@@ -37,7 +37,6 @@ json_escape() {
 import json
 import sys
 texto = sys.stdin.read()
-texto = texto.replace("/tmp/sandbox#", "root@AMHEEX-VPS ~#")
 print(json.dumps(texto))
 '
 }
@@ -263,39 +262,42 @@ EOF
                 tmux send-keys -t "$TMUX_SESSION" Enter
             fi
             
-            # Aguarda a estabilização e término do comando
-            sleep 6.5
+            # Aguarda a estabilização do comando
+            sleep 0.8
 
-            # Isola exclusivamente a resposta do comando recente executado
+            # Isola estritamente apenas a resposta pura do comando executado
             SAIDA_LIMPA=$(python3 -c '
 import subprocess
 import sys
 
 session_name = sys.argv[1]
-cmd_executado = sys.argv[2]
+cmd_executado = sys.argv[2].strip()
 try:
-    out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-300"]).decode("utf-8")
-    
-    out = out.replace("/tmp/sandbox#", "root@AMHEEX-VPS ~#")
-    out = out.replace("/tmp/sandbox$", "root@AMHEEX-VPS ~#")
-    
+    out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-100"]).decode("utf-8")
     linhas = [l.rstrip() for l in out.splitlines()]
     
-    linhas_filtradas = []
-    gravando = False
-    primeira_linha_cmd = cmd_executado.strip().splitlines()[0] if cmd_executado.strip() else ""
+    # Remove linhas vazias e procura onde o comando foi digitado para pegar apenas o que vem abaixo
+    linhas_uteis = []
+    capturar = False
     
     for l in linhas:
-        if primeira_linha_cmd and primeira_linha_cmd in l and not gravando:
-            gravando = True
-            linhas_filtradas = []
-        if gravando:
-            linhas_filtradas.append(l)
+        # Se encontrou o prompt com o comando, começa a capturar na próxima linha
+        if cmd_executado in l and ("~#" in l or "~$" in l or "root@" in l):
+            capturar = True
+            continue
+        if capturar:
+            # Para de capturar se encontrar o próximo prompt interativo limpo
+            if "root@AMHEEX-VPS" in l and l.strip().endswith("#"):
+                break
+            linhas_uteis.append(l)
             
-    if not linhas_filtradas:
-        linhas_filtradas = linhas[-15:]
-        
-    print("\n".join(linhas_filtradas).strip())
+    # Se por acaso não pegou pelo filtro exato, pega as últimas linhas úteis sem prompts
+    if not linhas_uteis:
+        for l in linhas:
+            if l.strip() and "root@AMHEEX-VPS" not in l:
+                linhas_uteis.append(l)
+                
+    print("\n".join(linhas_uteis).strip())
 except Exception as e:
     print(str(e))
 ' "$TMUX_SESSION" "$CMD")
