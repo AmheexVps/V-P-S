@@ -67,14 +67,14 @@ print(json.dumps(sys.stdin.read()))
 }
 
 # ------------------------------------------
-# ENVIA SOMENTE RESPOSTA
+# ENVIA SOMENTE RESPOSTA (SEM DATA/HORA)
 # ------------------------------------------
 enviar_resposta() {
     local TEXTO="$1"
     local TIMESTAMP="$2"
     local JSON_TEXTO
 
-    JSON_TEXTO=$(printf '%s' "$TEXTO" | json_escape)
+    JSON_TEXTO=$(printf '\%s' "$TEXTO" | json_escape)
 
     curl -s \
         --connect-timeout 2 \
@@ -120,11 +120,9 @@ forcar_limpeza_total() {
     local TIMESTAMP
     TIMESTAMP=$(obter_timestamp)
     
-    DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-    enviar_resposta "[$DATA_HORA] [SISTEMA: $MOTIVO - Interrompendo execuções e limpando workspace...]" "$TIMESTAMP"
+    enviar_resposta "[SISTEMA: $MOTIVO - Interrompendo execuções e limpando workspace...]" "$TIMESTAMP"
 
-    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
-    pkill -P $$ 2>/dev/null
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null     pkill -P $$ 2>/dev/null
     jobs -p | xargs kill -9 2>/dev/null
 
     rm -rf "$VM_WORKSPACE"
@@ -141,7 +139,6 @@ if ! command -v tmux >/dev/null 2>&1; then
     apt-get update -y && apt-get install -y tmux >/dev/null 2>&1
 fi
 
-# Garante que a sessão tmux existe e continua viva (se já existir, não destrói)
 if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
 fi
@@ -173,16 +170,16 @@ curl -s \
 clear
 
 echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}          │${NC}"
+echo -e "${BLUE}     │${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}          │${NC}"
 echo -e "${BLUE}     │                                                  │${NC}"
-echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}GOOGLE SHELL${BLUE}    ${YELLOW}TMUX SESSÃO ÚNICA${BLUE} │${NC}"
+echo -e "${BLUE}     │${GREEN}● ONLINE${BLUE}${CYAN}GOOGLE SHELL${BLUE}${YELLOW}TMUX SESSÃO ÚNICA${BLUE} │${NC}"
 echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
 echo ""
 echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
 echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
 echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
 echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos com sessão única contínua (100ms)...${NC}"
+echo -e "${GREEN}     [✓] Monitorando comandos sem data/hora (100ms)...${NC}"
 echo ""
 
 WORKSPACE_LIMPO=false
@@ -214,99 +211,4 @@ try:
         print(f"{act_str},{exp}")
 except:
     current_ms = int(time.time() * 1000)
-    print(f"TRUE,{current_ms + 30000}")
-' <<EOF
-$DADOS
-EOF
-)
-
-    IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
-
-    if [ "$ACTION_VAL" = "FALSE" ]; then
-        forcar_limpeza_total "DESATIVADO VIA FIREBASE"
-        
-        TIMESTAMP_MS=$(obter_timestamp)
-        curl -s \
-            -X PATCH \
-            -H "Content-Type: application/json" \
-            -d "{
-                \"id\":\"$ID_GERADO\",
-                \"action\":false,
-                \"data_hora\":$TIMESTAMP_MS
-            }" \
-            "$FIREBASE_URL" \
-            > /dev/null 2>&1
-
-        exit 0
-    fi
-
-    if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
-        if [ "$WORKSPACE_LIMPO" = "false" ]; then
-            forcar_limpeza_total "TEMPO EXPIRADO"
-            WORKSPACE_LIMPO=true
-        fi
-    else
-        WORKSPACE_LIMPO=false
-    fi
-
-    if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
-        sleep 0.1
-        continue
-    fi
-
-    CMD=$(python3 -c '
-import json
-import sys
-try:
-    data = json.loads(sys.stdin.read())
-    val = data.get("comando", "")
-    if val:
-        print(val)
-except:
-    pass
-' <<EOF
-$DADOS
-EOF
-)
-
-    if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
-        TIMESTAMP_MS=$(obter_timestamp)
-        limpar_resposta "$TIMESTAMP_MS"
-
-        # Limpa o comando no Firebase imediatamente
-        curl -s \
-            -X PATCH \
-            -H "Content-Type: application/json" \
-            -d "{
-                \"id\":\"$ID_GERADO\",
-                \"comando\":null,
-                \"data_hora\":$TIMESTAMP_MS
-            }" \
-            "$FIREBASE_URL" \
-            > /dev/null 2>&1
-
-        echo -e "${GREEN}[✓] Comando enviado para a sessão contínua.${NC}"
-
-        # Se a sessão tmux porventura caiu, recria mantendo o espaço de trabalho
-        if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-            tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
-        fi
-
-        # Envia o comando para a mesma sessão única e aperta Enter
-        tmux send-keys -t "$TMUX_SESSION" "$CMD" Enter
-        
-        # Pequena pausa para processar a saída
-        sleep 0.3
-
-        # Captura o painel atualizado da sessão única
-        SAIDA=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -50)
-        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-        RESULTADO="[$DATA_HORA]\n$SAIDA"
-        
-        TIMESTAMP_MS=$(obter_timestamp)
-        enviar_resposta "$RESULTADO" "$TIMESTAMP_MS"
-    fi
-
-    sleep 0.1
-
-done
+    print(f"TRUE,{current_ms + 3000
