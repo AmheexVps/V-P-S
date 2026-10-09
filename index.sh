@@ -1,4 +1,4 @@
-#!/usr/init/env bash
+#!/usr/bin/env bash
 set +H
 
 # ==========================================
@@ -282,7 +282,6 @@ try:
         act_str = "FALSE" if (act is False or str(act).lower() == "false") else "TRUE"
         exp = int(data.get("expiration", 0))
         
-        # Correção robusta para aceitar boolean ou string no campo interativo
         inter = data.get("interativo", False)
         if isinstance(inter, str):
             inter_str = "true" if inter.lower() in ("true", "1", "yes") else "false"
@@ -350,7 +349,6 @@ try:
 except:
     pass
 ' <<EOF
-$DADOES
 $DADOS
 EOF
 )
@@ -370,6 +368,7 @@ $DADOS
 EOF
 )
 
+    # Captura exclusivamente o input se estiver esperando e a flag estiver ativa
     if [ -f "$WAITING_FLAG" ] && [ "$INTERATIVO_FLAG" = "true" ] && [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
         echo ""
         echo -e "${YELLOW}╔══════════════════════════════════════════════════════════╗${NC}"
@@ -438,6 +437,6 @@ EOF
         executar_stream "$CMD" "GERAL" "$INTERATIVO_FLAG" &
     fi
 
-    sleep 0.5
+    sleep 1
 
 done
