@@ -18,11 +18,11 @@ echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}   
 echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
 echo ""
 
-# Pergunta quantas sandboxes deseja abrir
+# Pergunta quantas sandboxes deseja abrir (configuração inicial)
 read -p "$(echo -e "${YELLOW}Quantas sandboxes deseja abrir? (Padrão: 1): ${NC}")" QTD_SANDBOX
 QTD_SANDBOX=${QTD_SANDBOX:-1}
 
-echo -e "${GREEN}[✓] Configurando ${QTD_SANDBOX} sandbox(es)...${NC}"
+echo -e "${GREEN}[✓] Configuração definida: ${QTD_SANDBOX} sandbox(es)...${NC}"
 sleep 1
 
 # ==========================================
@@ -31,7 +31,6 @@ sleep 1
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
 DIR_FILE="$SANDBOX_DIR/current_dir"
-TMUX_SESSION="sandbox_ubuntu"
 
 mkdir -p "$SANDBOX_DIR"
 mkdir -p "$VM_WORKSPACE"
@@ -52,10 +51,18 @@ print(json.dumps(sys.stdin.read()))
 '
 }
 
-# ------------------------------------------
-# FUNÇÃO PARA INICIALIZAR OU REINICIAR A SANDBOX
-# ------------------------------------------
-iniciar_sandbox() {
+FIREBASE_LISTA_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/active_sandboxes.json"
+
+export DEBIAN_FRONTEND=noninteractive
+
+if ! command -v tmux >/dev/null 2>&1; then
+    apt-get update -y && apt-get install -y tmux >/dev/null 2>&1
+fi
+
+# ==========================================
+# FUNÇÃO PARA CRIAR/INICIALIZAR SANDBOXES
+# ==========================================
+iniciar_novas_sandboxes() {
     TIMESTAMP_INICIAL=$(obter_timestamp)
     ID_GERADO="ID${TIMESTAMP_INICIAL}"
 
@@ -65,29 +72,35 @@ iniciar_sandbox() {
 
     FIREBASE_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${ID_GERADO}/CMD.json"
 
-    export DEBIAN_FRONTEND=noninteractive
+    declare -a ARRAY_SANDBOX_IDS=()
 
-    if ! command -v tmux >/dev/null 2>&1; then
-        apt-get update -y && apt-get install -y tmux >/dev/null 2>&1
-    fi
+    # Criação das sandboxes respeitando o limite configurado
+    for ((i=1; i<=QTD_SANDBOX; i++)); do
+        TMUX_SESSION="sandbox_ubuntu_$i"
+        
+        if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+            tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
+            tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-$i ~# '" Enter
+        fi
+        
+        ARRAY_SANDBOX_IDS+=("$ID_GERADO-$i")
+    done
 
-    mkdir -p "$VM_WORKSPACE"
-    mkdir -p "$SANDBOX_DIR"
-
-    # Garante que a sessão tmux existe e define o PS1 personalizado
-    if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-        tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
-        tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS ~# '" Enter
-    fi
+    JSON_IDS=$(python3 -c '
+import json
+import sys
+ids = sys.argv[1:]
+print(json.dumps(ids))
+' "${ARRAY_SANDBOX_IDS[@]}")
 
     EXPIRATION_DEFAULT=$((TIMESTAMP_INICIAL + (30 * 1000)))
 
+    # Envia dados principais para o Firebase
     curl -s \
         -X PATCH \
         -H "Content-Type: application/json" \
         -d "{
             \"id\":\"$ID_GERADO\",
-            \"action\":true,
             \"expiration\":$EXPIRATION_DEFAULT,
             \"data_hora\":$TIMESTAMP_INICIAL,
             \"qtd_sandbox\":$QTD_SANDBOX
@@ -95,21 +108,32 @@ iniciar_sandbox() {
         "$FIREBASE_URL" \
         > /dev/null 2>&1
 
+    # Atualiza a lista unificada de sandbox_id ativas
+    curl -s \
+        -X PATCH \
+        -H "Content-Type: application/json" \
+        -d "{\"sandbox_id\": $JSON_IDS, \"servidor_ativo\": \"$ID_GERADO\"}" \
+        "$FIREBASE_LISTA_URL" \
+        > /dev/null 2>&1
+
     clear
     echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
     echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}          │${NC}"
     echo -e "${BLUE}     │                                                  │${NC}"
-    echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}QTD: ${QTD_SANDBOX}${BLUE}    ${YELLOW}TMUX SESSÃO ATIVA${BLUE}   │${NC}"
+    echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}QTD: ${QTD_SANDBOX}${BLUE}    ${YELLOW}TMUX ATIVAS${BLUE}         │${NC}"
     echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
     echo ""
     echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
-    echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
-    echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
+    echo -e "${WHITE}     🔹 ID Atual   : ${CYAN}$ID_GERADO${NC}"
+    echo -e "${WHITE}     🔹 Lista Ativa: ${CYAN}$JSON_IDS${NC}"
     echo ""
-    echo -e "${GREEN}     [✓] Monitorando comandos e pronto para uso...${NC}"
+    echo -e "${GREEN}     [✓] Monitoramento ativo...${NC}"
     echo ""
 }
 
+# ==========================================
+# FUNÇÕES DE RESPOSTA E LIMPEZA
+# ==========================================
 enviar_resposta() {
     local TEXTO="$1"
     local TIMESTAMP="$2"
@@ -124,7 +148,6 @@ enviar_resposta() {
         -H "Content-Type: application/json" \
         -d "{
             \"id\":\"$ID_GERADO\",
-            \"action\":true,
             \"resposta\":$JSON_TEXTO,
             \"data_hora\":$TIMESTAMP
         }" \
@@ -142,7 +165,6 @@ limpar_resposta() {
         -H "Content-Type: application/json" \
         -d "{
             \"id\":\"$ID_GERADO\",
-            \"action\":true,
             \"resposta\":\"\",
             \"data_hora\":$TIMESTAMP
         }" \
@@ -155,32 +177,22 @@ forcar_limpeza_total() {
     local TIMESTAMP
     TIMESTAMP=$(obter_timestamp)
     
-    enviar_resposta "[SISTEMA: $MOTIVO - Forçando encerramento total do tmux e arquivos...]" "$TIMESTAMP"
+    enviar_resposta "[SISTEMA: $MOTIVO - Apagando sessões e limpando arquivos...]" "$TIMESTAMP"
 
-    curl -s \
-        -X PATCH \
-        -H "Content-Type: application/json" \
-        -d "{
-            \"id\":\"$ID_GERADO\",
-            \"action\":false,
-            \"comando\":null,
-            \"resposta\":\"\",
-            \"data_hora\":$TIMESTAMP
-        }" \
-        "$FIREBASE_URL" \
-        > /dev/null 2>&1
-
+    # Mata todas as sessões do tmux e limpa arquivos completamente
     tmux kill-server 2>/dev/null
     pkill -9 tmux 2>/dev/null
     rm -rf "$VM_WORKSPACE"
     rm -rf "$SANDBOX_DIR"
+    mkdir -p "$SANDBOX_DIR"
+    mkdir -p "$VM_WORKSPACE"
 }
 
-# Inicia a primeira sandbox
-iniciar_sandbox
+# Inicializa o primeiro ciclo de sandboxes
+iniciar_novas_sandboxes
 
 # ==========================================
-# LOOP PRINCIPAL (100ms)
+# LOOP PRINCIPAL DO SERVIDOR (100ms)
 # ==========================================
 while true; do
     TIMESTAMP_MS=$(obter_timestamp)
@@ -194,42 +206,33 @@ try:
     data = json.loads(sys.stdin.read())
     current_ms = int(time.time() * 1000)
     if not isinstance(data, dict):
-        print(f"TRUE,{current_ms + 30000}")
+        print(f"{current_ms + 30000}")
     else:
-        act = data.get("action", True)
-        act_str = "FALSE" if (act is False or str(act).lower() == "false") else "TRUE"
         exp = data.get("expiration", current_ms + 30000)
         try:
             exp = int(exp)
         except:
             exp = current_ms + 30000
-        print(f"{act_str},{exp}")
+        print(f"{exp}")
 except:
     current_ms = int(time.time() * 1000)
-    print(f"TRUE,{current_ms + 30000}")
+    print(f"{current_ms + 30000}")
 ' <<EOF
 $DADOS
 EOF
 )
 
-    IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
+    EXPIRATION_VAL="$PARSED_VALS"
 
-    # Se action for FALSE: Encerra tudo e sai do script de vez
-    if [ "$ACTION_VAL" = "FALSE" ]; then
-        forcar_limpeza_total "DESATIVADO VIA FIREBASE"
-        echo -e "\n${RED}[!] Ação FALSE identificada. Sessão encerrada e script finalizado.${NC}"
-        exit 0
-    fi
-
-    # Se o tempo expirou: Limpa a sessão atual e cria uma nova sandbox automaticamente
+    # Se o tempo expirou: Apaga todas as sessões/arquivos e cria a próxima sandbox sem parar o script
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
+        echo -e "\n${YELLOW}[!] Tempo expirado. Apagando sessões antigas e criando nova sandbox...${NC}"
         forcar_limpeza_total "TEMPO EXPIRADO"
-        echo -e "\n${YELLOW}[!] Tempo expirado. Reiniciando nova sandbox...${NC}"
-        sleep 2
-        iniciar_sandbox
+        iniciar_novas_sandboxes
         continue
     fi
 
+    # Atualiza o data_hora do servidor
     curl -s \
         -X PATCH \
         -H "Content-Type: application/json" \
@@ -270,11 +273,12 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        echo -e "${GREEN}[✓] Comando executado na sandbox.${NC}"
+        echo -e "${GREEN}[✓] Comando executado nas sandboxes.${NC}"
 
+        TMUX_SESSION="sandbox_ubuntu_1"
         if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
             tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
-            tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS ~# '" Enter
+            tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-1 ~# '" Enter
         fi
 
         tmux send-keys -t "$TMUX_SESSION" "$CMD" Enter
@@ -286,13 +290,13 @@ import subprocess
 import re
 
 try:
-    out = subprocess.check_output(["tmux", "capture-pane", "-t", "sandbox_ubuntu", "-p", "-S", "-30"]).decode("utf-8")
+    out = subprocess.check_output(["tmux", "capture-pane", "-t", "sandbox_ubuntu_1", "-p", "-S", "-30"]).decode("utf-8")
     linhas = out.splitlines()
     
     linhas_limpas = []
     for l in linhas:
         stripped = l.strip()
-        if "root@AMHEEX-VPS ~#" in stripped or not stripped:
+        if "root@AMHEEX-VPS" in stripped or not stripped:
             continue
         linhas_limpas.append(l)
         
