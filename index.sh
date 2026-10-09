@@ -18,18 +18,13 @@ NC='\033[0m'
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
 DIR_FILE="$SANDBOX_DIR/current_dir"
-FIFO_IN="$SANDBOX_DIR/cmd_fifo"
-OUT_LOG="$SANDBOX_DIR/session_out.log"
+SESSION_NAME="firebase_persistent_session"
 
 mkdir -p "$SANDBOX_DIR"
 mkdir -p "$VM_WORKSPACE"
 
 if [ ! -f "$DIR_FILE" ]; then
     echo "$VM_WORKSPACE" > "$DIR_FILE"
-fi
-
-if [ ! -p "$FIFO_IN" ]; then
-    mkfifo "$FIFO_IN"
 fi
 
 # ==========================================
@@ -108,19 +103,12 @@ limpar_resposta() {
         > /dev/null 2>&1
 }
 
-# Inicializa a sessão única persistente em background
+# Garante que a sessão screen única existe
 inicializar_sessao() {
-    if ! pgrep -f "tail -f.*$FIFO_IN" > /dev/null; then
+    if ! screen -list | grep -q "$SESSION_NAME"; then
         DIR_ATUAL=$(cat "$DIR_FILE")
-        (
-            cd "$DIR_ATUAL"
-            while IFS= read -r cmd_line; do
-                DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-                echo "[$DATA_HORA] $cmd_line"
-                eval "$cmd_line" 2>&1
-                echo "----------------------------------------"
-            done < "$FIFO_IN"
-        ) > "$OUT_LOG" 2>&1 &
+        screen -d -m -S "$SESSION_NAME" bash
+        screen -S "$SESSION_NAME" -X eval "stuff 'cd $DIR_ATUAL\n'"
     fi
 }
 
@@ -130,13 +118,8 @@ executar_stream() {
     local DIR_ATUAL
 
     DIR_ATUAL=$(cat "$DIR_FILE")
-    if [ ! -d "$DIR_ATUAL" ]; then
-        DIR_ATUAL="$VM_WORKSPACE"
-        echo "$VM_WORKSPACE" > "$DIR_FILE"
-    fi
 
     if [ "$COMANDO" = "clear" ]; then
-        > "$OUT_LOG"
         TIMESTAMP=$(obter_timestamp)
         enviar_resposta "[Terminal limpo]" "$TIMESTAMP"
         return 0
@@ -148,21 +131,15 @@ executar_stream() {
         return 0
     fi
 
-    if [[ "$COMANDO" =~ ^cd[[:space:]]*$ ]]; then
-        DIR_ATUAL="$VM_WORKSPACE"
-        echo "$VM_WORKSPACE" > "$DIR_FILE"
-        echo "cd '$VM_WORKSPACE'" > "$FIFO_IN"
-        TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "Diretório atual: $DIR_ATUAL" "$TIMESTAMP"
-        return 0
-    elif [[ "$COMANDO" =~ ^cd[[:space:]]+(.*)$ ]]; then
+    # Tratamento específico para CD para persistir o diretório
+    if [[ "$COMANDO" =~ ^cd[[:space:]]+(.*)$ ]]; then
         local DESTINO="${BASH_REMATCH[1]}"
         local NOVO_DIR
         NOVO_DIR=$(cd "$DIR_ATUAL" && eval "cd $DESTINO" && pwd)
         
         if [ $? -eq 0 ] && [ -d "$NOVO_DIR" ]; then
             echo "$NOVO_DIR" > "$DIR_FILE"
-            echo "cd '$NOVO_DIR'" > "$FIFO_IN"
+            screen -S "$SESSION_NAME" -X eval "stuff 'cd $NOVO_DIR\n'"
             TIMESTAMP=$(obter_timestamp)
             enviar_resposta "Diretório atual: $NOVO_DIR" "$TIMESTAMP"
         else
@@ -172,23 +149,19 @@ executar_stream() {
         return 0
     fi
 
-    # Envia o comando para a única sessão persistente
-    echo "$COMANDO" > "$FIFO_IN"
-
-    sleep 0.8
-    TIMESTAMP=$(obter_timestamp)
+    # Envia o comando para a sessão única do screen e captura a saída recente
+    screen -S "$SESSION_NAME" -X eval "stuff '$COMANDO\n'"
     
-    local SAIDA_LOG=""
-    if [ -f "$OUT_LOG" ]; then
-        SAIDA_LOG=$(tail -n 30 "$OUT_LOG")
-    fi
-
-    enviar_resposta "$SAIDA_LOG" "$TIMESTAMP"
+    # Pequena pausa para o comando processar e gerar log/resposta
+    sleep 0.8
+    
+    TIMESTAMP=$(obter_timestamp)
+    enviar_resposta "[Comando enviado para a sessão única: $COMANDO]" "$TIMESTAMP"
     return 0
 }
 
 # ==========================================
-# AMBIENTE
+# AMBIENTE E INICIALIZAÇÃO
 # ==========================================
 export DEBIAN_FRONTEND=noninteractive
 
@@ -207,34 +180,19 @@ curl -s \
     "$FIREBASE_URL" \
     > /dev/null 2>&1
 
-if ! command -v node >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
-    INST_COMANDO='
-apt-get update -y &&
-apt-get install -y curl wget unzip zip build-essential software-properties-common apt-transport-https ca-certificates gnupg lsb-release python3 python3-pip python3-dev nodejs npm jq net-tools iputils-ping nano procps
-'
-    TIMESTAMP_MS=$(obter_timestamp)
-    limpar_resposta "$TIMESTAMP_MS"
-    inicializar_sessao
-    executar_stream "$INST_COMANDO"
-else
-    echo -e "${GREEN}[✓] Dependências já instaladas.${NC}"
+# Instalação de dependências (garantindo screen)
+if ! command -v node >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 || ! command -v screen >/dev/null 2>&1; then
+    apt-get update -y && apt-get install -y curl wget python3 python3-pip nodejs npm screen procps
 fi
 
+# Inicializa a sessão única persistente
 inicializar_sessao
 
 clear
 echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
 echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / SESSÃO ÚNICA PERSISTENTE${BLUE}      │${NC}"
-echo -e "${BLUE}     │                                                  │${NC}"
-echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}GOOGLE SHELL${BLUE}    ${YELLOW}FIREBASE SYNC${BLUE}   │${NC}"
 echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
-echo ""
-echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
-echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
-echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
-echo ""
-echo -e "${GREEN}     [✓] Sessão única ativa e monitorando...${NC}"
-echo ""
+echo -e "${GREEN}     [✓] Sessão única pronta e monitorando...${NC}"
 
 WORKSPACE_LIMPO=false
 
@@ -274,21 +232,9 @@ EOF
     IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
     if [ "$ACTION_VAL" = "FALSE" ]; then
+        screen -X -S "$SESSION_NAME" quit 2>/dev/null
         rm -rf "$VM_WORKSPACE"
-        rm -f "$FIFO_IN"
-        rm -f "$OUT_LOG"
         exit 0
-    fi
-
-    if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
-        if [ "$WORKSPACE_LIMPO" = "false" ]; then
-            rm -rf "$VM_WORKSPACE"
-            mkdir -p "$VM_WORKSPACE"
-            echo "$VM_WORKSPACE" > "$DIR_FILE"
-            WORKSPACE_LIMPO=true
-        fi
-    else
-        WORKSPACE_LIMPO=false
     fi
 
     curl -s \
