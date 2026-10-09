@@ -79,7 +79,6 @@ iniciar_todas_sandboxes() {
     for ((i=1; i<=QTD_SANDBOX; i++)); do
         TMUX_SESSION="sandbox_ubuntu_$i"
         
-        # ID gerado APENAS NA PRIMEIRA VEZ para cada sandbox e fixado
         SANDBOX_ID="ID${TIMESTAMP_BASE}-$i"
         
         if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
@@ -89,7 +88,6 @@ iniciar_todas_sandboxes() {
         
         ARRAY_SANDBOX_IDS+=("$SANDBOX_ID")
 
-        # Inicia com expiration = 0 (aguardando o sistema externo definir o tempo)
         local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SANDBOX_ID}/CMD.json"
         curl -s \
             -X PATCH \
@@ -129,7 +127,7 @@ print(json.dumps(ids))
     echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
     echo -e "${WHITE}     🔹 Lista Ativa: ${CYAN}$JSON_IDS${NC}"
     echo ""
-    echo -e "${GREEN}     [✓] Monitoramento com IDs fixos ativo...${NC}"
+    echo -e "${GREEN}     [✓] Monitoramento e execução de comandos ativo...${NC}"
     echo ""
 }
 
@@ -159,25 +157,6 @@ enviar_resposta() {
         > /dev/null 2>&1
 }
 
-limpar_resposta() {
-    local SB_ID="$1"
-    local TIMESTAMP="$2"
-    local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SB_ID}/CMD.json"
-
-    curl -s \
-        --connect-timeout 2 \
-        --max-time 5 \
-        -X PATCH \
-        -H "Content-Type: application/json" \
-        -d "{
-            \"id\":\"$SB_ID\",
-            \"resposta\":\"\",
-            \"data_hora\":$TIMESTAMP
-        }" \
-        "$FIREBASE_SB_URL" \
-        > /dev/null 2>&1
-}
-
 # Reseta APENAS a sandbox específica MANTENDO O MESMO ID e definindo expiration 0
 reiniciar_sandbox_isolada() {
     local INDEX="$1"
@@ -190,7 +169,6 @@ reiniciar_sandbox_isolada() {
 
     echo -e "\n${YELLOW}[!] Sandbox $SB_NUM ($SB_ID) expirou. Resetando e aguardando novo expiration...${NC}"
 
-    # Mata apenas se a sessão tmux existir e a recria limpa
     if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
     fi
@@ -198,7 +176,6 @@ reiniciar_sandbox_isolada() {
     tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
     tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
 
-    # Reseta o nó no Firebase MANTENDO O MESMO ID fixo e definindo expiration = 0
     local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SB_ID}/CMD.json"
     curl -s \
         -X PATCH \
@@ -248,7 +225,6 @@ $SB_DADOS
 EOF
 )
 
-        # Só expira se expiration for maior que 0 E o tempo atual passou do expiration
         if [ "$EXPIRATION_VAL" -gt 0 ] && [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
             reiniciar_sandbox_isolada "$i"
             continue
@@ -280,8 +256,7 @@ EOF
 )
 
         if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
-            limpar_resposta "$SB_ID" "$TIMESTAMP_MS"
-
+            # Limpa o comando pendente no Firebase imediatamente
             curl -s \
                 -X PATCH \
                 -H "Content-Type: application/json" \
@@ -293,37 +268,55 @@ EOF
                 "$SB_FIREBASE_URL" \
                 > /dev/null 2>&1
 
-            echo -e "${GREEN}[✓] Comando executado na partição isolada ${SB_ID}.${NC}"
+            echo -e "${GREEN}[✓] Executando comando na sandbox ${SB_ID}: $CMD${NC}"
 
             if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
                 tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
                 tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
             fi
 
+            # Envia o comando para o tmux
             tmux send-keys -t "$TMUX_SESSION" "$CMD" Enter
             
-            sleep 0.3
+            # Aguarda o comando processar no terminal
+            sleep 0.5
 
+            # Captura e limpa perfeitamente a saída real do terminal
             SAIDA_LIMPA=$(python3 -c '
 import subprocess
 import sys
 
 session_name = sys.argv[1]
+cmd_enviado = sys.argv[2]
 try:
-    out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-30"]).decode("utf-8")
+    out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-50"]).decode("utf-8")
     linhas = out.splitlines()
     
     linhas_limpas = []
+    capturar = False
     for l in linhas:
         stripped = l.strip()
-        if "root@AMHEEX-VPS" in stripped or not stripped:
+        # Ignora linhas vazias ou o próprio prompt do sistema
+        if not stripped or "root@AMHEEX-VPS" in stripped:
             continue
-        linhas_limpas.append(l)
-        
+        # Se encontrou o comando executado, começa a capturar a partir da linha seguinte
+        if cmd_enviado in stripped:
+            capturar = True
+            continue
+        if capturar:
+            linhas_limpas.append(l)
+            
+    # Se não achou por filtro, pega o histórico recente útil ignorando prompts
+    if not linhas_limpas:
+        for l in linhas:
+            stripped = l.strip()
+            if stripped and "root@AMHEEX-VPS" not in stripped:
+                linhas_limpas.append(l)
+
     print("\n".join(linhas_limpas).strip())
 except Exception as e:
     print(str(e))
-' "$TMUX_SESSION")
+' "$TMUX_SESSION" "$CMD")
 
             TIMESTAMP_FIM=$(obter_timestamp)
             enviar_resposta "$SB_ID" "$SAIDA_LIMPA" "$TIMESTAMP_FIM"
