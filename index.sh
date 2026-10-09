@@ -59,31 +59,50 @@ if ! command -v tmux >/dev/null 2>&1; then
     apt-get update -y && apt-get install -y tmux >/dev/null 2>&1
 fi
 
+# Variáveis globais para rastrear os IDs das sandboxes ativas
+declare -a ARRAY_SANDBOX_IDS=()
+TIMESTAMP_GLOBAL=""
+
 # ==========================================
 # FUNÇÃO PARA CRIAR/INICIALIZAR SANDBOXES
 # ==========================================
 iniciar_novas_sandboxes() {
-    TIMESTAMP_INICIAL=$(obter_timestamp)
-    ID_GERADO="ID${TIMESTAMP_INICIAL}"
+    TIMESTAMP_GLOBAL=$(obter_timestamp)
+    ID_BASE="ID${TIMESTAMP_GLOBAL}"
 
     IP_ATUAL=$(curl -s --max-time 10 https://api.ipify.org)
     [ -z "$IP_ATUAL" ] && IP_ATUAL=$(curl -s --max-time 10 https://icanhazip.com)
     [ -z "$IP_ATUAL" ] && IP_ATUAL="127.0.0.1"
 
-    FIREBASE_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${ID_GERADO}/CMD.json"
+    ARRAY_SANDBOX_IDS=()
+    EXPIRATION_DEFAULT=$((TIMESTAMP_GLOBAL + (30 * 1000)))
 
-    declare -a ARRAY_SANDBOX_IDS=()
-
-    # Criação das sandboxes respeitando o limite configurado
+    # Criação das sandboxes e partições individuais no Firebase
     for ((i=1; i<=QTD_SANDBOX; i++)); do
         TMUX_SESSION="sandbox_ubuntu_$i"
+        SANDBOX_ID="${ID_BASE}-$i"
         
         if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
             tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
             tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-$i ~# '" Enter
         fi
         
-        ARRAY_SANDBOX_IDS+=("$ID_GERADO-$i")
+        ARRAY_SANDBOX_IDS+=("$SANDBOX_ID")
+
+        # Inicializa a partição individual de cada sandbox no Firebase
+        local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SANDBOX_ID}/CMD.json"
+        curl -s \
+            -X PATCH \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"id\":\"$SANDBOX_ID\",
+                \"expiration\":$EXPIRATION_DEFAULT,
+                \"data_hora\":$TIMESTAMP_GLOBAL,
+                \"comando\":null,
+                \"resposta\":\"\"
+            }" \
+            "$FIREBASE_SB_URL" \
+            > /dev/null 2>&1
     done
 
     JSON_IDS=$(python3 -c '
@@ -93,26 +112,11 @@ ids = sys.argv[1:]
 print(json.dumps(ids))
 ' "${ARRAY_SANDBOX_IDS[@]}")
 
-    EXPIRATION_DEFAULT=$((TIMESTAMP_INICIAL + (30 * 1000)))
-
-    # Envia dados principais para o Firebase
-    curl -s \
-        -X PATCH \
-        -H "Content-Type: application/json" \
-        -d "{
-            \"id\":\"$ID_GERADO\",
-            \"expiration\":$EXPIRATION_DEFAULT,
-            \"data_hora\":$TIMESTAMP_INICIAL,
-            \"qtd_sandbox\":$QTD_SANDBOX
-        }" \
-        "$FIREBASE_URL" \
-        > /dev/null 2>&1
-
     # Atualiza a lista unificada de sandbox_id ativas
     curl -s \
         -X PATCH \
         -H "Content-Type: application/json" \
-        -d "{\"sandbox_id\": $JSON_IDS, \"servidor_ativo\": \"$ID_GERADO\"}" \
+        -d "{\"sandbox_id\": $JSON_IDS, \"servidor_ativo\": \"$ID_BASE\"}" \
         "$FIREBASE_LISTA_URL" \
         > /dev/null 2>&1
 
@@ -124,10 +128,10 @@ print(json.dumps(ids))
     echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
     echo ""
     echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
-    echo -e "${WHITE}     🔹 ID Atual   : ${CYAN}$ID_GERADO${NC}"
+    echo -e "${WHITE}     🔹 ID Base    : ${CYAN}$ID_BASE${NC}"
     echo -e "${WHITE}     🔹 Lista Ativa: ${CYAN}$JSON_IDS${NC}"
     echo ""
-    echo -e "${GREEN}     [✓] Monitoramento ativo...${NC}"
+    echo -e "${GREEN}     [✓] Monitoramento ativo com partições individuais...${NC}"
     echo ""
 }
 
@@ -135,11 +139,13 @@ print(json.dumps(ids))
 # FUNÇÕES DE RESPOSTA E LIMPEZA
 # ==========================================
 enviar_resposta() {
-    local TEXTO="$1"
-    local TIMESTAMP="$2"
+    local SB_ID="$1"
+    local TEXTO="$2"
+    local TIMESTAMP="$3"
     local JSON_TEXTO
 
     JSON_TEXTO=$(printf '%s' "$TEXTO" | json_escape)
+    local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SB_ID}/CMD.json"
 
     curl -s \
         --connect-timeout 2 \
@@ -147,16 +153,18 @@ enviar_resposta() {
         -X PATCH \
         -H "Content-Type: application/json" \
         -d "{
-            \"id\":\"$ID_GERADO\",
+            \"id\":\"$SB_ID\",
             \"resposta\":$JSON_TEXTO,
             \"data_hora\":$TIMESTAMP
         }" \
-        "$FIREBASE_URL" \
+        "$FIREBASE_SB_URL" \
         > /dev/null 2>&1
 }
 
 limpar_resposta() {
-    local TIMESTAMP="$1"
+    local SB_ID="$1"
+    local TIMESTAMP="$2"
+    local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SB_ID}/CMD.json"
 
     curl -s \
         --connect-timeout 2 \
@@ -164,20 +172,24 @@ limpar_resposta() {
         -X PATCH \
         -H "Content-Type: application/json" \
         -d "{
-            \"id\":\"$ID_GERADO\",
+            \"id\":\"$SB_ID\",
             \"resposta\":\"\",
             \"data_hora\":$TIMESTAMP
         }" \
-        "$FIREBASE_URL" \
+        "$FIREBASE_SB_URL" \
         > /dev/null 2>&1
 }
 
 forcar_limpeza_total() {
     local MOTIVO="$1"
-    local TIMESTAMP
-    TIMESTAMP=$(obter_timestamp)
     
-    enviar_resposta "[SISTEMA: $MOTIVO - Apagando sessões e limpando arquivos...]" "$TIMESTAMP"
+    # Apaga cada partição individual antiga do Firebase antes de sumir
+    for sb_id in "${ARRAY_SANDBOX_IDS[@]}"; do
+        curl -s \
+            -X DELETE \
+            "https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${sb_id}.json" \
+            > /dev/null 2>&1
+    done
 
     # Mata todas as sessões do tmux e limpa arquivos completamente
     tmux kill-server 2>/dev/null
@@ -196,6 +208,10 @@ iniciar_novas_sandboxes
 # ==========================================
 while true; do
     TIMESTAMP_MS=$(obter_timestamp)
+    
+    # Verifica a expiração usando a primeira sandbox da lista como referência
+    PRIMEIRA_SB="${ARRAY_SANDBOX_IDS[0]}"
+    FIREBASE_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${PRIMEIRA_SB}/CMD.json"
     DADOS=$(curl -s "$FIREBASE_URL")
 
     PARSED_VALS=$(python3 -c '
@@ -224,26 +240,35 @@ EOF
 
     EXPIRATION_VAL="$PARSED_VALS"
 
-    # Se o tempo expirou: Apaga todas as sessões/arquivos e cria a próxima sandbox sem parar o script
+    # Se o tempo expirou: Apaga os nós antigos do Firebase, limpa sessões e cria novas sandboxes
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
-        echo -e "\n${YELLOW}[!] Tempo expirado. Apagando sessões antigas e criando nova sandbox...${NC}"
+        echo -e "\n${YELLOW}[!] Tempo expirado. Apagando partições antigas e criando novas sandboxes...${NC}"
         forcar_limpeza_total "TEMPO EXPIRADO"
         iniciar_novas_sandboxes
         continue
     fi
 
-    # Atualiza o data_hora do servidor
-    curl -s \
-        -X PATCH \
-        -H "Content-Type: application/json" \
-        -d "{
-            \"id\":\"$ID_GERADO\",
-            \"data_hora\":$TIMESTAMP_MS
-        }" \
-        "$FIREBASE_URL" \
-        > /dev/null 2>&1
+    # Varre cada sandbox individualmente para buscar comandos na sua própria partição
+    for i in "${!ARRAY_SANDBOX_IDS[@]}"; do
+        SB_ID="${ARRAY_SANDBOX_IDS[$i]}"
+        SB_NUM=$((i + 1))
+        TMUX_SESSION="sandbox_ubuntu_$SB_NUM"
+        SB_FIREBASE_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SB_ID}/CMD.json"
 
-    CMD=$(python3 -c '
+        SB_DADOS=$(curl -s "$SB_FIREBASE_URL")
+
+        # Atualiza o data_hora da sandbox atual
+        curl -s \
+            -X PATCH \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"id\":\"$SB_ID\",
+                \"data_hora\":$TIMESTAMP_MS
+            }" \
+            "$SB_FIREBASE_URL" \
+            > /dev/null 2>&1
+
+        CMD=$(python3 -c '
 import json
 import sys
 try:
@@ -254,43 +279,42 @@ try:
 except:
     pass
 ' <<EOF
-$DADOS
+$SB_DADOS
 EOF
 )
 
-    if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
-        TIMESTAMP_MS=$(obter_timestamp)
-        limpar_resposta "$TIMESTAMP_MS"
+        if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
+            limpar_resposta "$SB_ID" "$TIMESTAMP_MS"
 
-        curl -s \
-            -X PATCH \
-            -H "Content-Type: application/json" \
-            -d "{
-                \"id\":\"$ID_GERADO\",
-                \"comando\":null,
-                \"data_hora\":$TIMESTAMP_MS
-            }" \
-            "$FIREBASE_URL" \
-            > /dev/null 2>&1
+            curl -s \
+                -X PATCH \
+                -H "Content-Type: application/json" \
+                -d "{
+                    \"id\":\"$SB_ID\",
+                    \"comando\":null,
+                    \"data_hora\":$TIMESTAMP_MS
+                }" \
+                "$SB_FIREBASE_URL" \
+                > /dev/null 2>&1
 
-        echo -e "${GREEN}[✓] Comando executado nas sandboxes.${NC}"
+            echo -e "${GREEN}[✓] Comando executado na partição ${SB_ID}.${NC}"
 
-        TMUX_SESSION="sandbox_ubuntu_1"
-        if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-            tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
-            tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-1 ~# '" Enter
-        fi
+            if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+                tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
+                tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
+            fi
 
-        tmux send-keys -t "$TMUX_SESSION" "$CMD" Enter
-        
-        sleep 0.3
+            tmux send-keys -t "$TMUX_SESSION" "$CMD" Enter
+            
+            sleep 0.3
 
-        SAIDA_LIMPA=$(python3 -c '
+            SAIDA_LIMPA=$(python3 -c '
 import subprocess
-import re
+import sys
 
+session_name = sys.argv[1]
 try:
-    out = subprocess.check_output(["tmux", "capture-pane", "-t", "sandbox_ubuntu_1", "-p", "-S", "-30"]).decode("utf-8")
+    out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-30"]).decode("utf-8")
     linhas = out.splitlines()
     
     linhas_limpas = []
@@ -303,11 +327,12 @@ try:
     print("\n".join(linhas_limpas).strip())
 except Exception as e:
     print(str(e))
-')
+' "$TMUX_SESSION")
 
-        TIMESTAMP_MS=$(obter_timestamp)
-        enviar_resposta "$SAIDA_LIMPA" "$TIMESTAMP_MS"
-    fi
+            TIMESTAMP_FIM=$(obter_timestamp)
+            enviar_resposta "$SB_ID" "$SAIDA_LIMPA" "$TIMESTAMP_FIM"
+        fi
+    done
 
     sleep 0.1
 
