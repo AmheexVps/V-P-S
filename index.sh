@@ -143,15 +143,19 @@ executar_stream() {
         return 0
     fi
 
-    # Envia o comando para a sessão tmux persistente
+    # 1. Limpa o terminal tmux antes de rodar o novo comando
+    tmux send-keys -t "$TMUX_SESSION" "clear" C-m
+    sleep 0.2
+
+    # 2. Envia o comando real
     tmux send-keys -t "$TMUX_SESSION" "$COMANDO" C-m
     
-    # Pausa para o comando processar e gerar output no painel
-    sleep 1
+    # Pausa para o comando processar e gerar output
+    sleep 0.8
 
-    # Captura o histórico visível atual da sessão tmux (últimas 30 linhas)
+    # 3. Captura o conteúdo atual da tela do tmux e filtra linhas vazias desnecessárias
     local SAIDA
-    SAIDA=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -30)
+    SAIDA=$(tmux capture-pane -t "$TMUX_SESSION" -p | sed '/^[[:space:]]*$/d')
 
     # Atualiza diretório atual persistido
     local DIR_ATUAL
@@ -160,7 +164,7 @@ executar_stream() {
         echo "$DIR_ATUAL" > "$DIR_FILE"
     fi
 
-    # Envia a resposta capturada de volta para o Firebase
+    # Envia a resposta limpa para o Firebase
     TIMESTAMP=$(obter_timestamp)
     enviar_resposta "$SAIDA" "$TIMESTAMP"
 
