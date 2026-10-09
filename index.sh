@@ -18,7 +18,7 @@ NC='\033[0m'
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
 DIR_FILE="$SANDBOX_DIR/current_dir"
-SESSION_FIFO="$SANDBOX_DIR/session_fifo"
+TMUX_SESSION="sandbox_ubuntu"
 
 mkdir -p "$SANDBOX_DIR"
 mkdir -p "$VM_WORKSPACE"
@@ -26,10 +26,6 @@ mkdir -p "$VM_WORKSPACE"
 if [ ! -f "$DIR_FILE" ]; then
     echo "$VM_WORKSPACE" > "$DIR_FILE"
 fi
-
-# Cria o canal de comunicação para o terminal real
-rm -f "$SESSION_FIFO"
-mkfifo "$SESSION_FIFO"
 
 # ==========================================
 # IDENTIFICAÇÃO
@@ -127,6 +123,7 @@ forcar_limpeza_total() {
     DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
     enviar_resposta "[$DATA_HORA] [SISTEMA: $MOTIVO - Interrompendo execuções e limpando workspace...]" "$TIMESTAMP"
 
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
     pkill -P $$ 2>/dev/null
     jobs -p | xargs kill -9 2>/dev/null
 
@@ -136,9 +133,17 @@ forcar_limpeza_total() {
 }
 
 # ==========================================
-# AMBIENTE
+# AMBIENTE & TMUX
 # ==========================================
 export DEBIAN_FRONTEND=noninteractive
+
+if ! command -v tmux >/dev/null 2>&1; then
+    apt-get update -y && apt-get install -y tmux >/dev/null 2>&1
+fi
+
+# Inicia a sessão persistentemente no diretório de trabalho
+tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
+tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
 
 # ==========================================
 # TIMESTAMP INICIAL
@@ -169,14 +174,14 @@ clear
 echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
 echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}          │${NC}"
 echo -e "${BLUE}     │                                                  │${NC}"
-echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}GOOGLE SHELL${BLUE}    ${YELLOW}FIREBASE SYNC${BLUE}   │${NC}"
+echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}GOOGLE SHELL${BLUE}    ${YELLOW}TMUX SESSÃO ATIVA${BLUE} │${NC}"
 echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
 echo ""
 echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
 echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
 echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
 echo ""
-echo -e "${GREEN}     [✓] Terminal interativo pronto (100ms)...${NC}"
+echo -e "${GREEN}     [✓] Monitorando comandos com sessão persistente (100ms)...${NC}"
 echo ""
 
 WORKSPACE_LIMPO=false
@@ -279,15 +284,18 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        echo -e "${GREEN}[✓] Comando executado com sucesso.${NC}"
+        echo -e "${GREEN}[✓] Comando executado na sessão persistente.${NC}"
 
-        # Executa o comando simulando o Enter nativo e captura a saída para o Firebase
-        DIR_ATUAL=$(cat "$DIR_FILE")
-        [ ! -d "$DIR_ATUAL" ] && DIR_ATUAL="$VM_WORKSPACE"
+        # Envia o comando para a sessão tmux simulando o Enter real
+        tmux send-keys -t "$TMUX_SESSION" "$CMD" Enter
+        
+        # Aguarda um curtíssimo instante para o processo escrever a saída
+        sleep 0.2
 
-        SAIDA=$(cd "$DIR_ATUAL" && bash -c "$CMD" 2>&1)
+        # Captura as últimas linhas da tela do tmux para enviar de volta como resposta
+        SAIDA=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -50)
         DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-        RESULTADO="[$DATA_HORA] $SAIDA"
+        RESULTADO="[$DATA_HORA]\n$SAIDA"
         
         TIMESTAMP_MS=$(obter_timestamp)
         enviar_resposta "$RESULTADO" "$TIMESTAMP_MS"
