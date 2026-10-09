@@ -56,7 +56,7 @@ obter_timestamp() {
 }
 
 # ------------------------------------------
-# ESCAPA TEXTO PARA JSON
+# ESCAPA TEXTO PARA JSON (Usado apenas para enviar ao Firebase)
 # ------------------------------------------
 json_escape() {
     python3 -c '
@@ -113,7 +113,7 @@ limpar_resposta() {
 }
 
 # ------------------------------------------
-# FUNÇÃO DE EMERGÊNCIA / EXPIRAÇÃO: MATA TUDO E APAGA TUDO
+# FUNÇÃO DE EMERGÊNCIA / EXPIRAÇÃO
 # ------------------------------------------
 forcar_limpeza_total() {
     local MOTIVO="$1"
@@ -123,7 +123,6 @@ forcar_limpeza_total() {
     enviar_resposta "[SISTEMA: $MOTIVO - Encerrando sessão tmux e limpando arquivos...]" "$TIMESTAMP"
 
     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
-
     pkill -P $$ 2>/dev/null
     jobs -p | xargs kill -9 2>/dev/null
 
@@ -142,8 +141,8 @@ fi
 
 if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
-    # Oculta o prompt do bash dentro da sessão do tmux para não poluir as capturas
-    tmux send-keys -t "$TMUX_SESSION" "PS1=''" Enter
+    # Oculta completamente o prompt do terminal dentro da sessão tmux
+    tmux send-keys -t "$TMUX_SESSION" "export PS1=''" Enter
 fi
 
 # ==========================================
@@ -182,7 +181,7 @@ echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
 echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
 echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
 echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos sem data/hora (100ms)...${NC}"
+echo -e "${GREEN}     [✓] Monitorando comandos em Bash puro (100ms)...${NC}"
 echo ""
 
 # ==========================================
@@ -238,7 +237,6 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        echo -e "\n${RED}[!] Sessão encerrada, arquivos limpos e script finalizado.${NC}"
         exit 0
     fi
 
@@ -282,38 +280,20 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        echo -e "${GREEN}[✓] Comando executado na sessão contínua.${NC}"
+        echo -e "${GREEN}[✓] Comando executado.${NC}"
 
         if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
             tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
-            tmux send-keys -t "$TMUX_SESSION" "PS1=''" Enter
+            tmux send-keys -t "$TMUX_SESSION" "export PS1=''" Enter
         fi
 
+        # Envia o comando para o tmux
         tmux send-keys -t "$TMUX_SESSION" "$CMD" Enter
         
         sleep 0.3
 
-        # Filtra rigorosamente para remover qualquer rastro de path, prompt ou comando ecoado
-        SAIDA_LIMPA=$(python3 -c '
-import subprocess
-import re
-
-try:
-    out = subprocess.check_output(["tmux", "capture-pane", "-t", "sandbox_ubuntu", "-p", "-S", "-30"]).decode("utf-8")
-    linhas = out.splitlines()
-    
-    linhas_limpas = []
-    for l in linhas:
-        stripped = l.strip()
-        # Ignora linhas que contenham caminhos de sandbox ou prompts do sistema
-        if "/tmp/sandbox#" in stripped or "root@" in stripped or not stripped:
-            continue
-        linhas_limpas.append(l)
-        
-    print("\n".join(linhas_limpas).strip())
-except Exception as e:
-    print(str(e))
-')
+        # Captura pura da tela do tmux formatada em Bash
+        SAIDA_LIMPA=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 | grep -v "export PS1" | sed '/^[[:space:]]*$/d')
 
         TIMESTAMP_MS=$(obter_timestamp)
         enviar_resposta "$SAIDA_LIMPA" "$TIMESTAMP_MS"
