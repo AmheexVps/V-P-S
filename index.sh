@@ -84,7 +84,6 @@ iniciar_todas_sandboxes() {
         
         if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
             tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
-            # Configura ambiente completo e suporte a terminal interativo
             tmux send-keys -t "$TMUX_SESSION" "export TERM=xterm-256color HOME=/root PS1='root@AMHEEX-VPS-$i ~# '" Enter
         fi
         
@@ -264,7 +263,7 @@ EOF
                     \"comando\":null,
                     \"data_hora\":$TIMESTAMP_MS
                 }" \
-                "$SB_FIREBASE_URL" \
+                "$FIREBASE_SB_URL" \
                 > /dev/null 2>&1
 
             echo -e "${GREEN}[✓] Executando comando na sandbox ${SB_ID}: $CMD${NC}"
@@ -274,7 +273,6 @@ EOF
                 tmux send-keys -t "$TMUX_SESSION" "export TERM=xterm-256color HOME=/root PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
             fi
 
-            # Envia o comando respeitando as linhas e garantindo o Enter final
             ultimo_caractere="${CMD: -1}"
             
             while IFS= read -r linha_cmd || [ -n "$linha_cmd" ]; do
@@ -291,32 +289,42 @@ EOF
                 tmux send-keys -t "$TMUX_SESSION" Enter
             fi
             
-            # Aguarda o comando processar no terminal
             sleep 0.6
 
-            # Captura TOTAL do buffer do tmux preservando o suporte interativo completo
+            # Captura focada na última interação do comando recente
             SAIDA_LIMPA=$(python3 -c '
 import subprocess
 import sys
 
 session_name = sys.argv[1]
+cmd_executado = sys.argv[2]
 try:
-    out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-1000"]).decode("utf-8")
+    out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-300"]).decode("utf-8")
     
     out = out.replace("/tmp/sandbox#", "root@AMHEEX-VPS ~#")
     out = out.replace("/tmp/sandbox$", "root@AMHEEX-VPS ~#")
     
     linhas = [l.rstrip() for l in out.splitlines()]
     
-    while linhas and not linhas[0]:
-        linhas.pop(0)
-    while linhas and not linhas[-1]:
-        linhas.pop()
+    # Isola a partir do comando recente executado para manter a resposta limpa e sem histórico duplicado antigo
+    linhas_filtradas = []
+    gravando = False
+    primeira_linha_cmd = cmd_executado.strip().splitlines()[0] if cmd_executado.strip() else ""
+    
+    for l in linhas:
+        if primeira_linha_cmd and primeira_linha_cmd in l and not gravando:
+            gravando = True
+            linhas_filtradas = []
+        if gravando:
+            linhas_filtradas.append(l)
+            
+    if not linhas_filtradas:
+        linhas_filtradas = linhas[-25:]
         
-    print("\n".join(linhas))
+    print("\n".join(linhas_filtradas).strip())
 except Exception as e:
     print(str(e))
-' "$TMUX_SESSION")
+' "$TMUX_SESSION" "$CMD")
 
             TIMESTAMP_FIM=$(obter_timestamp)
             enviar_resposta "$SB_ID" "$SAIDA_LIMPA" "$TIMESTAMP_FIM"
