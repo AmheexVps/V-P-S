@@ -70,8 +70,8 @@ if ! command -v tmux >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
 fi
 
 declare -a ARRAY_SANDBOX_IDS=()
-# Array para guardar o último comando executado por sandbox e evitar repetição
 declare -A ULTIMO_COMANDO_EXECUTADO=()
+declare -A ULTIMO_TIMESTAMP_CMD=()
 
 iniciar_todas_sandboxes() {
     IP_ATUAL=$(curl -s --max-time 10 https://api.ipify.org)
@@ -92,6 +92,7 @@ iniciar_todas_sandboxes() {
         
         ARRAY_SANDBOX_IDS+=("$SANDBOX_ID")
         ULTIMO_COMANDO_EXECUTADO["$SANDBOX_ID"]=""
+        ULTIMO_TIMESTAMP_CMD["$SB_ID"]=0
 
         local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SANDBOX_ID}/CMD.json"
         curl -s \
@@ -247,13 +248,19 @@ $SB_DADOS
 EOF
 )
 
-        # Verifica se há um comando válido E se ele é diferente do último já executado
-        if [ -n "$CMD" ] && [ "$CMD" != "null" ] && [ "$CMD" != "${ULTIMO_COMANDO_EXECUTADO[$SB_ID]}" ]; then
+        # Se o comando for null ou vazio, limpa a memória para aceitar o próximo comando com tranquilidade
+        if [ -z "$CMD" ] || [ "$CMD" = "null" ]; then
+            ULTIMO_COMANDO_EXECUTADO["$SB_ID"]=""
+            continue
+        fi
+
+        # Executa apenas se o comando for novo e diferente do atual armazenado
+        if [ "$CMD" != "${ULTIMO_COMANDO_EXECUTADO[$SB_ID]}" ]; then
             
-            # Atualiza a memória para não repetir o mesmo comando
+            # Trava na memória imediatamente para evitar repetição
             ULTIMO_COMANDO_EXECUTADO["$SB_ID"]="$CMD"
 
-            # 1. Limpa o comando no Firebase IMEDIATAMENTE (deixa como null)
+            # 1. Apaga o comando no Firebase IMEDIATAMENTE (define como null) para o servidor servidor não ficar preso
             curl -s \
                 -X PATCH \
                 -H "Content-Type: application/json" \
@@ -265,19 +272,24 @@ EOF
                 "$FIREBASE_SB_URL" \
                 > /dev/null 2>&1
 
-            # 2. Dá clear no terminal do servidor ANTES de executar o comando
+            # 2. Limpa a tela do terminal do script local gerenciador
             clear
 
-            echo -e "${GREEN}[✓] Executando comando na sandbox ${SB_ID}: ${CYAN}$CMD${NC}"
+            echo -e "${GREEN}[✓] Processando comando na sandbox ${SB_ID}: ${CYAN}$CMD${NC}"
 
             if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
                 tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
                 tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
             fi
 
+            # 3. ANTES de executar o comando novo, limpa o terminal da sandbox tmux (envia clear para a VM)
+            tmux send-keys -t "$TMUX_SESSION" "clear" Enter
+            sleep 0.1
+
+            # 4. Envia o comando real para a sandbox tmux
             tmux send-keys -t "$TMUX_SESSION" "$CMD" Enter
             
-            sleep 0.3
+            sleep 0.4
 
             SAIDA_LIMPA=$(python3 -c '
 import subprocess
@@ -291,7 +303,7 @@ try:
     linhas_limpas = []
     for l in linhas:
         stripped = l.strip()
-        if "root@AMHEEX-VPS" in stripped or not stripped:
+        if "root@AMHEEX-VPS" in stripped or not stripped or stripped == "clear":
             continue
         linhas_limpas.append(l)
         
@@ -302,10 +314,6 @@ except Exception as e:
 
             TIMESTAMP_FIM=$(obter_timestamp)
             enviar_resposta "$SB_ID" "$SAIDA_LIMPA" "$TIMESTAMP_FIM"
-            
-        elif [ "$CMD" = "null" ] || [ -z "$CMD" ]; then
-            # Se o comando foi limpo ou zerado no firebase, libera o gatilho do último comando
-            ULTIMO_COMANDO_EXECUTADO["$SB_ID"]=""
         fi
     done
 
