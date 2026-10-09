@@ -18,6 +18,7 @@ NC='\033[0m'
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
 DIR_FILE="$SANDBOX_DIR/current_dir"
+SESSION_NAME="firebase_persistent_session"
 
 mkdir -p "$SANDBOX_DIR"
 mkdir -p "$VM_WORKSPACE"
@@ -54,9 +55,6 @@ obter_timestamp() {
     python3 -c 'import time; print(int(time.time() * 1000))'
 }
 
-# ------------------------------------------
-# ESCAPA TEXTO PARA JSON
-# ------------------------------------------
 json_escape() {
     python3 -c '
 import json
@@ -65,9 +63,6 @@ print(json.dumps(sys.stdin.read()))
 '
 }
 
-# ------------------------------------------
-# ENVIA SOMENTE RESPOSTA
-# ------------------------------------------
 enviar_resposta() {
     local TEXTO="$1"
     local TIMESTAMP="$2"
@@ -90,9 +85,6 @@ enviar_resposta() {
         > /dev/null 2>&1
 }
 
-# ------------------------------------------
-# LIMPA SOMENTE A RESPOSTA
-# ------------------------------------------
 limpar_resposta() {
     local TIMESTAMP="$1"
 
@@ -111,54 +103,43 @@ limpar_resposta() {
         > /dev/null 2>&1
 }
 
-# ------------------------------------------
-# EXECUTA COMANDO COM SUPORTE A CD, CLEAR, EXIT
-# ------------------------------------------
+# Garante que a sessão screen única existe
+inicializar_sessao() {
+    if ! screen -list | grep -q "$SESSION_NAME"; then
+        DIR_ATUAL=$(cat "$DIR_FILE")
+        screen -d -m -S "$SESSION_NAME" bash
+        screen -S "$SESSION_NAME" -X eval "stuff 'cd $DIR_ATUAL\n'"
+    fi
+}
+
 executar_stream() {
     local COMANDO="$1"
-    local TIPO="$2"
-
-    local BUFFER=""
     local TIMESTAMP
-    local DATA_HORA
-    local LINHA
-    local SAIDA
     local DIR_ATUAL
 
     DIR_ATUAL=$(cat "$DIR_FILE")
-    if [ ! -d "$DIR_ATUAL" ]; then
-        DIR_ATUAL="$VM_WORKSPACE"
-        echo "$VM_WORKSPACE" > "$DIR_FILE"
-    fi
 
-    # Tratamento para o comando CLEAR
     if [ "$COMANDO" = "clear" ]; then
         TIMESTAMP=$(obter_timestamp)
         enviar_resposta "[Terminal limpo]" "$TIMESTAMP"
         return 0
     fi
 
-    # Tratamento para EXIT / EXITE
     if [ "$COMANDO" = "exit" ] || [ "$COMANDO" = "exite" ]; then
         TIMESTAMP=$(obter_timestamp)
         enviar_resposta "[Sessão de comando encerrada]" "$TIMESTAMP"
         return 0
     fi
 
-    # Tratamento para o comando CD
-    if [[ "$COMANDO" =~ ^cd[[:space:]]*$ ]]; then
-        DIR_ATUAL="$VM_WORKSPACE"
-        echo "$VM_WORKSPACE" > "$DIR_FILE"
-        TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "Diretório atual: $DIR_ATUAL" "$TIMESTAMP"
-        return 0
-    elif [[ "$COMANDO" =~ ^cd[[:space:]]+(.*)$ ]]; then
+    # Tratamento específico para CD para persistir o diretório
+    if [[ "$COMANDO" =~ ^cd[[:space:]]+(.*)$ ]]; then
         local DESTINO="${BASH_REMATCH[1]}"
         local NOVO_DIR
         NOVO_DIR=$(cd "$DIR_ATUAL" && eval "cd $DESTINO" && pwd)
         
         if [ $? -eq 0 ] && [ -d "$NOVO_DIR" ]; then
             echo "$NOVO_DIR" > "$DIR_FILE"
+            screen -S "$SESSION_NAME" -X eval "stuff 'cd $NOVO_DIR\n'"
             TIMESTAMP=$(obter_timestamp)
             enviar_resposta "Diretório atual: $NOVO_DIR" "$TIMESTAMP"
         else
@@ -168,35 +149,25 @@ executar_stream() {
         return 0
     fi
 
-    # Execução normal dos outros comandos mantendo o diretório atual
-    while IFS= read -r LINHA || [ -n "$LINHA" ]; do
-        LINHA="${LINHA%$'\r'}"
-        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-        SAIDA="[$DATA_HORA] $LINHA"
-        BUFFER+="$SAIDA"$'\n'
-        printf '%s\n' "$SAIDA"
-        
-        TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "$BUFFER" "$TIMESTAMP"
-    done < <(cd "$DIR_ATUAL" && stdbuf -oL -eL bash -c "$COMANDO" 2>&1)
-
+    # Envia o comando para a sessão única do screen e captura a saída recente
+    screen -S "$SESSION_NAME" -X eval "stuff '$COMANDO\n'"
+    
+    # Pequena pausa para o comando processar e gerar log/resposta
+    sleep 0.8
+    
+    TIMESTAMP=$(obter_timestamp)
+    enviar_resposta "[Comando enviado para a sessão única: $COMANDO]" "$TIMESTAMP"
     return 0
 }
 
 # ==========================================
-# AMBIENTE
+# AMBIENTE E INICIALIZAÇÃO
 # ==========================================
 export DEBIAN_FRONTEND=noninteractive
 
-# ==========================================
-# TIMESTAMP INICIAL
-# ==========================================
 TIMESTAMP_MS=$(obter_timestamp)
 EXPIRATION_DEFAULT=$((TIMESTAMP_MS + (30 * 1000)))
 
-# ==========================================
-# REGISTRO INICIAL (action: true enviado 1 vez aqui)
-# ==========================================
 curl -s \
     -X PATCH \
     -H "Content-Type: application/json" \
@@ -209,43 +180,19 @@ curl -s \
     "$FIREBASE_URL" \
     > /dev/null 2>&1
 
-# ==========================================
-# INSTALAÇÃO DE DEPENDÊNCIAS
-# ==========================================
-if ! command -v node >/dev/null 2>&1 || \
-   ! command -v python3 >/dev/null 2>&1; then
-
-    echo -e "${YELLOW}[*] Dependências ausentes.${NC}"
-    echo -e "${YELLOW}[*] Instalação iniciada.${NC}"
-
-    INST_COMANDO='
-apt-get update -y &&
-apt-get install -y curl wget unzip zip build-essential software-properties-common apt-transport-https ca-certificates gnupg lsb-release python3 python3-pip python3-dev nodejs npm jq net-tools iputils-ping nano screen tmux
-'
-    TIMESTAMP_MS=$(obter_timestamp)
-    limpar_resposta "$TIMESTAMP_MS"
-    executar_stream "$INST_COMANDO" "INSTALACAO"
-else
-    echo -e "${GREEN}[✓] Dependências já instaladas.${NC}"
+# Instalação de dependências (garantindo screen)
+if ! command -v node >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 || ! command -v screen >/dev/null 2>&1; then
+    apt-get update -y && apt-get install -y curl wget python3 python3-pip nodejs npm screen procps
 fi
 
-# ==========================================
-# INTERFACE VISUAL
-# ==========================================
-clear
+# Inicializa a sessão única persistente
+inicializar_sessao
 
+clear
 echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}          │${NC}"
-echo -e "${BLUE}     │                                                  │${NC}"
-echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}GOOGLE SHELL${BLUE}    ${YELLOW}FIREBASE SYNC${BLUE}   │${NC}"
+echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / SESSÃO ÚNICA PERSISTENTE${BLUE}      │${NC}"
 echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
-echo ""
-echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
-echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
-echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
-echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos em tempo real...${NC}"
-echo ""
+echo -e "${GREEN}     [✓] Sessão única pronta e monitorando...${NC}"
 
 WORKSPACE_LIMPO=false
 
@@ -285,38 +232,11 @@ EOF
     IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
     if [ "$ACTION_VAL" = "FALSE" ]; then
-        echo -e "\n${RED}[!] Script desativado via Firebase.${NC}"
-        TIMESTAMP_MS=$(obter_timestamp)
-        curl -s \
-            -X PATCH \
-            -H "Content-Type: application/json" \
-            -d "{
-                \"id\":\"$ID_GERADO\",
-                \"action\":false,
-                \"data_hora\":$TIMESTAMP_MS
-            }" \
-            "$FIREBASE_URL" \
-            > /dev/null 2>&1
-
+        screen -X -S "$SESSION_NAME" quit 2>/dev/null
         rm -rf "$VM_WORKSPACE"
-        echo -e "${GREEN}[✓] Workspace limpo.${NC}"
-        echo -e "${GREEN}[✓] Encerrando.${NC}"
         exit 0
     fi
 
-    if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
-        if [ "$WORKSPACE_LIMPO" = "false" ]; then
-            echo -e "\n${YELLOW}[!] Tempo expirado. Limpando workspace...${NC}"
-            rm -rf "$VM_WORKSPACE"
-            mkdir -p "$VM_WORKSPACE"
-            echo "$VM_WORKSPACE" > "$DIR_FILE"
-            WORKSPACE_LIMPO=true
-        fi
-    else
-        WORKSPACE_LIMPO=false
-    fi
-
-    # Atualiza o data_hora a cada 1 segundo no loop principal
     curl -s \
         -X PATCH \
         -H "Content-Type: application/json" \
@@ -332,7 +252,7 @@ import json
 import sys
 try:
     data = json.loads(sys.stdin.read())
-    val = data.get("comando", "")
+    val = data.get("comando", "") or data.get("cmd_ubuntu", "")
     if val:
         print(val.replace("\\n", "\n"))
 except:
@@ -342,29 +262,7 @@ $DADOS
 EOF
 )
 
-    CMD_UBUNTU=$(python3 -c '
-import json
-import sys
-try:
-    data = json.loads(sys.stdin.read())
-    val = data.get("cmd_ubuntu", "")
-    if val:
-        print(val.replace("\\n", "\n"))
-except:
-    pass
-' <<EOF
-$DADOS
-EOF
-)
-
-    if [ -n "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
-        echo ""
-        echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║               NOVO COMANDO UBUNTU                       ║${NC}"
-        echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
-        echo -e "${WHITE}$CMD_UBUNTU${NC}"
-        echo ""
-
+    if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
         TIMESTAMP_MS=$(obter_timestamp)
         limpar_resposta "$TIMESTAMP_MS"
 
@@ -380,34 +278,8 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        executar_stream "$CMD_UBUNTU" "UBUNTU" &
-
-    elif [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
-        echo ""
-        echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║                  NOVO COMANDO                           ║${NC}"
-        echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
-        echo -e "${WHITE}$CMD${NC}"
-        echo ""
-
-        TIMESTAMP_MS=$(obter_timestamp)
-        limpar_resposta "$TIMESTAMP_MS"
-
-        curl -s \
-            -X PATCH \
-            -H "Content-Type: application/json" \
-            -d "{
-                \"id\":\"$ID_GERADO\",
-                \"comando\":null,
-                \"data_hora\":$TIMESTAMP_MS
-            }" \
-            "$FIREBASE_URL" \
-            > /dev/null 2>&1
-
-        executar_stream "$CMD" "GERAL" &
+        executar_stream "$CMD"
     fi
 
-    # Pausa verídica de 1 segundo (sleep 1) por ciclo
     sleep 1
-
 done
