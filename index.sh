@@ -2,7 +2,7 @@
 set +H
 
 # ==========================================
-# CONFIGURAÇÃO FIXA (EDITE AQUI SE QUISER MUDAR)
+# CONFIGURAÇÃO FIXA
 # ==========================================
 QTD_SANDBOX_FIXA=5
 
@@ -58,7 +58,6 @@ FIREBASE_LISTA_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/active
 
 export DEBIAN_FRONTEND=noninteractive
 
-# Garantir dependências essenciais no Linux (tmux e curl)
 if ! command -v tmux >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
     echo -e "${YELLOW}[!] Instalando dependências necessárias (tmux, curl)...${NC}"
     if command -v apt-get >/dev/null 2>&1; then
@@ -70,12 +69,8 @@ if ! command -v tmux >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
     fi
 fi
 
-# Arrays globais para rastrear os IDs fixos e sessões individualmente
 declare -a ARRAY_SANDBOX_IDS=()
 
-# ==========================================
-# FUNÇÃO PARA CRIAR TODAS AS SANDBOXES INICIAIS
-# ==========================================
 iniciar_todas_sandboxes() {
     IP_ATUAL=$(curl -s --max-time 10 https://api.ipify.org)
     [ -z "$IP_ATUAL" ] && IP_ATUAL=$(curl -s --max-time 10 https://icanhazip.com)
@@ -86,8 +81,6 @@ iniciar_todas_sandboxes() {
 
     for ((i=1; i<=QTD_SANDBOX; i++)); do
         TMUX_SESSION="sandbox_ubuntu_$i"
-        
-        # ID gerado APENAS NA PRIMEIRA VEZ para cada sandbox e fixado
         SANDBOX_ID="ID${TIMESTAMP_BASE}-$i"
         
         if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
@@ -140,9 +133,6 @@ print(json.dumps(ids))
     echo ""
 }
 
-# ==========================================
-# FUNÇÕES DE RESPOSTA E LIMPEZA INDIVIDUAL
-# ==========================================
 enviar_resposta() {
     local SB_ID="$1"
     local TEXTO="$2"
@@ -166,25 +156,6 @@ enviar_resposta() {
         > /dev/null 2>&1
 }
 
-limpar_resposta() {
-    local SB_ID="$1"
-    local TIMESTAMP="$2"
-    local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SB_ID}/CMD.json"
-
-    curl -s \
-        --connect-timeout 2 \
-        --max-time 5 \
-        -X PATCH \
-        -H "Content-Type: application/json" \
-        -d "{
-            \"id\":\"$SB_ID\",
-            \"resposta\":\"\",
-            \"data_hora\":$TIMESTAMP
-        }" \
-        "$FIREBASE_SB_URL" \
-        > /dev/null 2>&1
-}
-
 reiniciar_sandbox_isolada() {
     local INDEX="$1"
     local SB_ID="${ARRAY_SANDBOX_IDS[$INDEX]}"
@@ -194,7 +165,7 @@ reiniciar_sandbox_isolada() {
     
     local TMUX_SESSION="sandbox_ubuntu_$SB_NUM"
 
-    echo -e "\n${YELLOW}[!] Sandbox $SB_NUM ($SB_ID) expirou. Resetando e aguardando novo expiration...${NC}"
+    echo -e "\n${YELLOW}[!] Sandbox $SB_NUM ($SB_ID) expirou. Resetando...${NC}"
 
     if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
@@ -221,7 +192,7 @@ reiniciar_sandbox_isolada() {
 iniciar_todas_sandboxes
 
 # ==========================================
-# LOOP PRINCIPAL DO SERVIDOR (100ms)
+# LOOP PRINCIPAL DO SERVIDOR
 # ==========================================
 while true; do
     TIMESTAMP_MS=$(obter_timestamp)
@@ -256,16 +227,6 @@ EOF
             continue
         fi
 
-        curl -s \
-            -X PATCH \
-            -H "Content-Type: application/json" \
-            -d "{
-                \"id\":\"$SB_ID\",
-                \"data_hora\":$TIMESTAMP_MS
-            }" \
-            "$SB_FIREBASE_URL" \
-            > /dev/null 2>&1
-
         CMD=$(python3 -c '
 import json
 import sys
@@ -282,11 +243,7 @@ EOF
 )
 
         if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
-            # Executa o clear no terminal do script antes de processar/executar o comando
-            clear
-
-            limpar_resposta "$SB_ID" "$TIMESTAMP_MS"
-
+            # Limpa o comando no Firebase IMEDIATAMENTE para evitar loop infinito
             curl -s \
                 -X PATCH \
                 -H "Content-Type: application/json" \
@@ -298,7 +255,10 @@ EOF
                 "$FIREBASE_SB_URL" \
                 > /dev/null 2>&1
 
-            echo -e "${GREEN}[✓] Comando executado na partição isolada ${SB_ID}.${NC}"
+            # Dá clear no terminal do script gerenciador antes de processar
+            clear
+
+            echo -e "${GREEN}[✓] Executando comando na sandbox ${SB_ID}: ${CYAN}$CMD${NC}"
 
             if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
                 tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
