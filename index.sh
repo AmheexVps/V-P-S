@@ -2,6 +2,11 @@
 set +H
 
 # ==========================================
+# CONFIGURAÇÃO FIXA (EDITE AQUI SE QUISER MUDAR)
+# ==========================================
+QTD_SANDBOX_FIXA=5
+
+# ==========================================
 # CONFIGURAÇÃO DE CORES
 # ==========================================
 RED='\033[0;31m'
@@ -18,11 +23,10 @@ echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}   
 echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
 echo ""
 
-# Pergunta quantas sandboxes deseja abrir (configuração inicial)
-read -p "$(echo -e "${YELLOW}Quantas sandboxes deseja abrir? (Padrão: 1): ${NC}")" QTD_SANDBOX
-QTD_SANDBOX=${QTD_SANDBOX:-1}
+# Usa a quantidade fixa definida no topo do código
+QTD_SANDBOX=${QTD_SANDBOX_FIXA}
 
-echo -e "${GREEN}[✓] Configuração definida: ${QTD_SANDBOX} sandbox(es)...${NC}"
+echo -e "${GREEN}[✓] Configuração automática definida: ${QTD_SANDBOX} sandbox(es)...${NC}"
 sleep 1
 
 # ==========================================
@@ -76,7 +80,10 @@ iniciar_novas_sandboxes() {
 
     ARRAY_SANDBOX_IDS=()
 
-    # Criação das sandboxes e partições individuais no Firebase com expiration = 0 (aguardando)
+    # Define o tempo de expiração padrão fixo de 10 segundos (10000ms) a partir de agora
+    EXPIRATION_DEFAULT=$((TIMESTAMP_GLOBAL + (10 * 1000)))
+
+    # Criação das sandboxes e partições individuais no Firebase com 10s de expiração
     for ((i=1; i<=QTD_SANDBOX; i++)); do
         TMUX_SESSION="sandbox_ubuntu_$i"
         SANDBOX_ID="${ID_BASE}-$i"
@@ -94,7 +101,7 @@ iniciar_novas_sandboxes() {
             -H "Content-Type: application/json" \
             -d "{
                 \"id\":\"$SANDBOX_ID\",
-                \"expiration\":0,
+                \"expiration\":$EXPIRATION_DEFAULT,
                 \"data_hora\":$TIMESTAMP_GLOBAL,
                 \"comando\":null,
                 \"resposta\":\"\"
@@ -122,14 +129,14 @@ print(json.dumps(ids))
     echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
     echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}          │${NC}"
     echo -e "${BLUE}     │                                                  │${NC}"
-    echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}QTD: ${QTD_SANDBOX}${BLUE}    ${YELLOW}AGUARDANDO EXPIRATION${BLUE}│${NC}"
+    echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}QTD: ${QTD_SANDBOX}${BLUE}    ${YELLOW}EXPIRA EM 10s${BLUE}       │${NC}"
     echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
     echo ""
     echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
     echo -e "${WHITE}     🔹 ID Base    : ${CYAN}$ID_BASE${NC}"
     echo -e "${WHITE}     🔹 Lista Ativa: ${CYAN}$JSON_IDS${NC}"
     echo ""
-    echo -e "${GREEN}     [✓] Aguardando definição de expiration no Firebase...${NC}"
+    echo -e "${GREEN}     [✓] Monitoramento e contagem regressiva de 10s ativos...${NC}"
     echo ""
 }
 
@@ -236,9 +243,9 @@ EOF
 
     EXPIRATION_VAL="$PARSED_VALS"
 
-    # Se expiration for maior que 0 e o tempo atual já passou do expiration, ele expira e reinicia
+    # Se o tempo atual passou do expiration de 10s, ele limpa tudo e reinicia novas sandboxes automaticamente
     if [ "$EXPIRATION_VAL" -gt 0 ] && [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
-        echo -e "\n${YELLOW}[!] Tempo expirado. Apagando partições antigas e criando novas sandboxes...${NC}"
+        echo -e "\n${YELLOW}[!] Tempo de 10s expirado. Apagando partições antigas e criando novas sandboxes...${NC}"
         forcar_limpeza_total "TEMPO EXPIRADO"
         iniciar_novas_sandboxes
         continue
