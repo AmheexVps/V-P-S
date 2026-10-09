@@ -1,4 +1,4 @@
-#!/usr/init/env bash
+#!/usr/bin/env bash
 set +H
 
 # ==========================================
@@ -18,7 +18,9 @@ NC='\033[0m'
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
 DIR_FILE="$SANDBOX_DIR/current_dir"
-TMUX_SESSION="sandbox_session"
+SESSION_NAME="sandbox_persistent_session"
+OUTPUT_LOG="$SANDBOX_DIR/output.log"
+INPUT_FIFO="$SANDBOX_DIR/input_fifo"
 
 mkdir -p "$SANDBOX_DIR"
 mkdir -p "$VM_WORKSPACE"
@@ -113,65 +115,63 @@ limpar_resposta() {
 }
 
 # ------------------------------------------
-# INICIALIZA OU RECRIA SESSÃO TMUX LIMPA
+# INICIALIZA SESSÃO PERSISTENTE (SCREEN)
 # ------------------------------------------
-inicializar_tmux() {
-    local DIR_INICIAL
-    DIR_INICIAL=$(cat "$DIR_FILE")
-    [ ! -d "$DIR_INICIAL" ] && DIR_INICIAL="$VM_WORKSPACE"
-
-    # Se a sessão já existe, derruba para garantir um ambiente limpo sem processos presos
-    if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
-        tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
+iniciar_sessao_persistente() {
+    if ! screen -list | grep -q "$SESSION_NAME"; then
+        DIR_ATUAL=$(cat "$DIR_FILE")
+        [ ! -d "$DIR_ATUAL" ] && DIR_ATUAL="$VM_WORKSPACE"
+        
+        # Cria uma sessão screen desacoplada rodando bash no diretório correto
+        screen -d -m -S "$SESSION_NAME" bash -c "cd '$DIR_ATUAL' && exec bash"
+        sleep 0.5
     fi
-    
-    tmux new-session -d -s "$TMUX_SESSION" -c "$DIR_INICIAL"
 }
 
 # ------------------------------------------
-# EXECUTA COMANDO COM STREAM A CADA 1S
+# EXECUTA COMANDO NA SESSÃO ÚNICA PERSISTENTE
 # ------------------------------------------
 executar_stream() {
     local COMANDO="$1"
     local TIPO="$2"
     local TIMESTAMP
 
-    # Tratamento para EXIT / EXITE
-    if [ "$COMANDO" = "exit" ] || [ "$COMANDO" = "exite" ]; then
-        tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
+    iniciar_sessao_persistente
+
+    # Tratamento para o comando CLEAR
+    if [ "$COMANDO" = "clear" ]; then
         TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "[Sessão Tmux encerrada]" "$TIMESTAMP"
+        enviar_resposta "[Terminal limpo]" "$TIMESTAMP"
         return 0
     fi
 
-    # Recria a sessão tmux do zero para matar qualquer comando anterior que estivesse rodando
-    inicializar_tmux
-
-    # Envia o comando real para o tmux
-    tmux send-keys -t "$TMUX_SESSION" "$COMANDO" C-m
-    
-    # Aguarda um instante inicial para o comando renderizar
-    sleep 0.5
-
-    # Loop contínuo para atualizar a view no Firebase a cada 1s
-    while tmux has-session -t "$TMUX_SESSION" 2>/dev/null; do
-        # Captura a tela atual do painel do Tmux
-        local SAIDA
-        SAIDA=$(tmux capture-pane -t "$TMUX_SESSION" -p)
-
-        # Atualiza o diretório atual persistido
-        local DIR_ATUAL
-        DIR_ATUAL=$(tmux display-message -p -t "$TMUX_SESSION" "#{pane_current_path}")
-        if [ -d "$DIR_ATUAL" ]; then
-            echo "$DIR_ATUAL" > "$DIR_FILE"
-        fi
-
-        # Envia a resposta atualizada para o Firebase
+    # Tratamento para EXIT / EXITE
+    if [ "$COMANDO" = "exit" ] || [ "$COMANDO" = "exite" ]; then
+        screen -S "$SESSION_NAME" -X quit 2>/dev/null
         TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "$SAIDA" "$TIMESTAMP"
+        enviar_resposta "[Sessão de comando encerrada]" "$TIMESTAMP"
+        return 0
+    fi
 
-        sleep 1
-    done
+    # Tratamento especial para comandos 'cd' para atualizar o arquivo de controle de diretório
+    if [[ "$COMANDO" =~ ^cd([[:space:]]+.*)?$ ]]; then
+        screen -S "$SESSION_NAME" -X stuff "$COMANDO; pwd > \"$DIR_FILE\"$(printf \\r)"
+        sleep 0.5
+        local NOVO_DIR
+        NOVO_DIR=$(cat "$DIR_FILE")
+        TIMESTAMP=$(obter_timestamp)
+        enviar_resposta "Diretório atual: $NOVO_DIR" "$TIMESTAMP"
+        return 0
+    fi
+
+    # Envia o comando para a sessão screen existente sem abrir novas sessões
+    # Captura a saída redirecionando ou lendo o buffer/log se necessário
+    screen -S "$SESSION_NAME" -X stuff "$COMANDO$(printf \\r)"
+
+    # Dá um breve tempo para o comando processar e lê o estado/resposta recente
+    sleep 1
+    TIMESTAMP=$(obter_timestamp)
+    enviar_resposta "[Comando enviado para a sessão interativa]" "$TIMESTAMP"
 
     return 0
 }
@@ -207,18 +207,19 @@ curl -s \
 # ==========================================
 if ! command -v node >/dev/null 2>&1 || \
    ! command -v python3 >/dev/null 2>&1 || \
-   ! command -v tmux >/dev/null 2>&1; then
+   ! command -v screen >/dev/null 2>&1; then
 
-    INST_COMANDO='
-apt-get update -y &&
-apt-get install -y curl wget unzip zip build-essential software-properties-common apt-transport-https ca-certificates gnupg lsb-release python3 python3-pip python3-dev nodejs npm jq net-tools iputils-ping nano screen tmux
-'
-    TIMESTAMP_MS=$(obter_timestamp)
-    limpar_resposta "$TIMESTAMP_MS"
-    eval "$INST_COMANDO"
+    echo -e "${YELLOW}[*] Dependências ausentes.${NC}"
+    echo -e "${YELLOW}[*] Instalação iniciada.${NC}"
+
+    apt-get update -y && \
+    apt-get install -y curl wget unzip zip build-essential software-properties-common apt-transport-https ca-certificates gnupg lsb-release python3 python3-pip python3-dev nodejs npm jq net-tools iputils-ping nano screen tmux
+else
+    echo -e "${GREEN}[✓] Dependências já instaladas.${NC}()"
 fi
 
-inicializar_tmux
+# Inicializa a sessão screen principal logo no início
+iniciar_sessao_persistente
 
 # ==========================================
 # INTERFACE VISUAL
@@ -226,7 +227,7 @@ inicializar_tmux
 clear
 
 echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX (TMUX)${BLUE}     │${NC}"
+echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}          │${NC}"
 echo -e "${BLUE}     │                                                  │${NC}"
 echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}GOOGLE SHELL${BLUE}    ${YELLOW}FIREBASE SYNC${BLUE}   │${NC}"
 echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
@@ -234,9 +235,8 @@ echo ""
 echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
 echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
 echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
-echo -e "${WHITE}     🔹 Tmux Sessão: ${CYAN}$TMUX_SESSION${NC}"
 echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos em tempo real...${NC}"
+echo -e "${GREEN}     [✓] Monitorando comandos em tempo real (Sessão Única Interativa)...${NC}"
 echo ""
 
 WORKSPACE_LIMPO=false
@@ -277,30 +277,22 @@ EOF
     IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
     if [ "$ACTION_VAL" = "FALSE" ]; then
-        TIMESTAMP_MS=$(obter_timestamp)
-        curl -s \
-            -X PATCH \
-            -H "Content-Type: application/json" \
-            -d "{
-                \"id\":\"$ID_GERADO\",
-                \"action\":false,
-                \"data_hora\":$TIMESTAMP_MS
-            }" \
-            "$FIREBASE_URL" \
-            > /dev/null 2>&1
-
-        tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
+        echo -e "\n${RED}[!] Script desativado via Firebase.${NC}"
+        screen -S "$SESSION_NAME" -X quit 2>/dev/null
         rm -rf "$VM_WORKSPACE"
+        echo -e "${GREEN}[✓] Workspace limpo.${NC}"
+        echo -e "${GREEN}[✓] Encerrando.${NC}"
         exit 0
     fi
 
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
         if [ "$WORKSPACE_LIMPO" = "false" ]; then
-            tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
+            echo -e "\n${YELLOW}[!] Tempo expirado. Limpando workspace...${NC}"
+            screen -S "$SESSION_NAME" -X quit 2>/dev/null
             rm -rf "$VM_WORKSPACE"
             mkdir -p "$VM_WORKSPACE"
             echo "$VM_WORKSPACE" > "$DIR_FILE"
-            inicializar_tmux
+            iniciar_sessao_persistente
             WORKSPACE_LIMPO=true
         fi
     else
@@ -348,6 +340,13 @@ EOF
 )
 
     if [ -n "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
+        echo ""
+        echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║               NOVO COMANDO UBUNTU                       ║${NC}"
+        echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
+        echo -e "${WHITE}$CMD_UBUNTU${NC}"
+        echo ""
+
         TIMESTAMP_MS=$(obter_timestamp)
         limpar_resposta "$TIMESTAMP_MS"
 
@@ -363,9 +362,16 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        executar_stream "$CMD_UBUNTU" "UBUNTU" &
+        executar_stream "$CMD_UBUNTU" "UBUNTU"
 
     elif [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
+        echo ""
+        echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║                  NOVO COMANDO                           ║${NC}"
+        echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
+        echo -e "${WHITE}$CMD${NC}"
+        echo ""
+
         TIMESTAMP_MS=$(obter_timestamp)
         limpar_resposta "$TIMESTAMP_MS"
 
@@ -380,9 +386,8 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        executar_stream "$CMD" "GERAL" &
+        executar_stream "$CMD" "GERAL"
     fi
 
     sleep 1
-
 done
