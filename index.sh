@@ -147,7 +147,7 @@ forcar_limpeza_total() {
 executar_stream() {
     local COMANDO="$1"
     local TIPO="$2"
-    local INTERATIVO="$3" # Recebe se deve usar input interativo
+    local INTERATIVO="$3"
 
     local BUFFER=""
     local TIMESTAMP
@@ -204,7 +204,6 @@ executar_stream() {
 
     local TEM_SAIDA=false
 
-    # Se for definido como interativo, liga a flag de espera e lê do FIFO
     if [ "$INTERATIVO" = "true" ]; then
         touch "$WAITING_FLAG"
         while IFS= read -r LINHA || [ -n "$LINHA" ]; do
@@ -220,7 +219,6 @@ executar_stream() {
         done < <(cd "$DIR_ATUAL" && stdbuf -oL -eL bash -c "$COMANDO" < "$INPUT_FIFO" 2>&1)
         rm -f "$WAITING_FLAG"
     else
-        # Execução padrão sem travar o stdin
         while IFS= read -r LINHA || [ -n "$LINHA" ]; do
             TEM_SAIDA=true
             LINHA="${LINHA%$'\r'}"
@@ -335,7 +333,6 @@ try:
         except:
             exp = current_ms + 30000
         
-        # Lê o campo interativo do JSON (pode ser true/false ou string)
         inter = data.get("interativo", False)
         inter_str = "true" if (inter is True or str(inter).lower() == "true") else "false"
         
@@ -426,7 +423,7 @@ $DADOS
 EOF
 )
 
-    # Verifica se a flag de espera está ativa E o servidor definiu que isto é um input/confirmação interativa
+    # Se estiver esperando input E o comando interativo estiver ativo, envia o input E atualiza a resposta no Firebase
     if [ -f "$WAITING_FLAG" ] && [ "$INTERATIVO_FLAG" = "true" ] && [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
         echo ""
         echo -e "${YELLOW}╔══════════════════════════════════════════════════════════╗${NC}"
@@ -435,11 +432,14 @@ EOF
         echo -e "${WHITE}$CMD${NC}"
         echo ""
 
-        # Injeta o texto na FIFO do processo em loop atual
+        # Envia o texto para a FIFO do processo em loop
         echo "$CMD" > "$INPUT_FIFO"
 
         TIMESTAMP_MS=$(obter_timestamp)
-        limpar_resposta "$TIMESTAMP_MS"
+        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+        
+        # Envia a confirmação/input inserido para a resposta do Firebase para manter o histórico visível
+        enviar_resposta "[$DATA_HORA] [INPUT ENVIADO]: $CMD" "$TIMESTAMP_MS"
 
         # Limpa o comando e reseta a flag interativa no Firebase
         curl -s \
