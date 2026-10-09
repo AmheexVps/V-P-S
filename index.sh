@@ -84,7 +84,8 @@ iniciar_todas_sandboxes() {
         
         if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
             tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
-            tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-$i ~# '" Enter
+            # Configura ambiente completo e suporte a terminal interativo
+            tmux send-keys -t "$TMUX_SESSION" "export TERM=xterm-256color HOME=/root PS1='root@AMHEEX-VPS-$i ~# '" Enter
         fi
         
         ARRAY_SANDBOX_IDS+=("$SANDBOX_ID")
@@ -174,7 +175,7 @@ reiniciar_sandbox_isolada() {
     fi
     
     tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
-    tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
+    tmux send-keys -t "$TMUX_SESSION" "export TERM=xterm-256color HOME=/root PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
 
     local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SB_ID}/CMD.json"
     curl -s \
@@ -263,14 +264,14 @@ EOF
                     \"comando\":null,
                     \"data_hora\":$TIMESTAMP_MS
                 }" \
-                "$FIREBASE_SB_URL" \
+                "$SB_FIREBASE_URL" \
                 > /dev/null 2>&1
 
             echo -e "${GREEN}[✓] Executando comando na sandbox ${SB_ID}: $CMD${NC}"
 
             if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
                 tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
-                tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
+                tmux send-keys -t "$TMUX_SESSION" "export TERM=xterm-256color HOME=/root PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
             fi
 
             # Envia o comando respeitando as linhas e garantindo o Enter final
@@ -293,7 +294,7 @@ EOF
             # Aguarda o comando processar no terminal
             sleep 0.6
 
-            # Captura TOTAL do buffer do tmux (até 1000 linhas) sem cortar perguntas interativas
+            # Captura TOTAL do buffer do tmux preservando o suporte interativo completo
             SAIDA_LIMPA=$(python3 -c '
 import subprocess
 import sys
@@ -302,13 +303,11 @@ session_name = sys.argv[1]
 try:
     out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-1000"]).decode("utf-8")
     
-    # Substituições corretas para manter o padrão visual limpo
     out = out.replace("/tmp/sandbox#", "root@AMHEEX-VPS ~#")
     out = out.replace("/tmp/sandbox$", "root@AMHEEX-VPS ~#")
     
     linhas = [l.rstrip() for l in out.splitlines()]
     
-    # Remove linhas excessivamente vazias no topo ou rodapé, preservando todo o histórico interativo
     while linhas and not linhas[0]:
         linhas.pop(0)
     while linhas and not linhas[-1]:
