@@ -263,7 +263,7 @@ EOF
                     \"comando\":null,
                     \"data_hora\":$TIMESTAMP_MS
                 }" \
-                "$SB_FIREBASE_URL" \
+                "$FIREBASE_SB_URL" \
                 > /dev/null 2>&1
 
             echo -e "${GREEN}[✓] Executando comando na sandbox ${SB_ID}: $CMD${NC}"
@@ -293,7 +293,7 @@ EOF
             # Aguarda o comando processar no terminal
             sleep 0.6
 
-            # Captura a tela do tmux limpa e trata os caminhos do prompt
+            # Captura TOTAL do buffer do tmux (até 1000 linhas) sem cortar perguntas interativas
             SAIDA_LIMPA=$(python3 -c '
 import subprocess
 import sys
@@ -306,8 +306,9 @@ try:
     out = out.replace("/tmp/sandbox#", "root@AMHEEX-VPS ~#")
     out = out.replace("/tmp/sandbox$", "root@AMHEEX-VPS ~#")
     
-    # Remove linhas vazias excessivas no topo ou base se houver
     linhas = [l.rstrip() for l in out.splitlines()]
+    
+    # Remove linhas excessivamente vazias no topo ou rodapé, preservando todo o histórico interativo
     while linhas and not linhas[0]:
         linhas.pop(0)
     while linhas and not linhas[-1]:
