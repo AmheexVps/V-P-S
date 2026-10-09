@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/init/env bash
 set +H
 
 # ==========================================
@@ -143,28 +143,28 @@ executar_stream() {
         return 0
     fi
 
-    # 1. Limpa totalmente o terminal tmux antes do comando
+    # 1. Limpa totalmente o painel do tmux antes de executar
     tmux send-keys -t "$TMUX_SESSION" "clear" C-m
     sleep 0.2
 
-    # 2. Envia o comando real
+    # 2. Envia o comando real de forma oculta
     tmux send-keys -t "$TMUX_SESSION" "$COMANDO" C-m
     
-    # Pausa para o comando processar
+    # Pausa para o comando processar e renderizar na tela
     sleep 0.8
 
-    # 3. Captura o painel e filtra o eco do comando, linhas em branco e prompts
+    # 3. Captura exatamente a tela inteira do Tmux atual
     local SAIDA
-    SAIDA=$(tmux capture-pane -t "$TMUX_SESSION" -p | sed '/^[[:space:]]*$/d' | grep -v "root@" | grep -v "$COMANDO")
+    SAIDA=$(tmux capture-pane -t "$TMUX_SESSION" -p)
 
-    # Atualiza diretório atual persistido
+    # Atualiza o diretório atual persistido
     local DIR_ATUAL
     DIR_ATUAL=$(tmux display-message -p -t "$TMUX_SESSION" "#{pane_current_path}")
     if [ -d "$DIR_ATUAL" ]; then
         echo "$DIR_ATUAL" > "$DIR_FILE"
     fi
 
-    # Envia apenas a resposta limpa para o Firebase
+    # Envia a resposta completa para o Firebase
     TIMESTAMP=$(obter_timestamp)
     enviar_resposta "$SAIDA" "$TIMESTAMP"
 
