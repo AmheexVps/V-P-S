@@ -133,7 +133,7 @@ forcar_limpeza_total() {
 }
 
 # ==========================================
-# AMBIENTE & TMUX
+# AMBIENTE & TMUX PERSISTENTE
 # ==========================================
 export DEBIAN_FRONTEND=noninteractive
 
@@ -141,9 +141,10 @@ if ! command -v tmux >/dev/null 2>&1; then
     apt-get update -y && apt-get install -y tmux >/dev/null 2>&1
 fi
 
-# Inicia a sessão persistentemente no diretório de trabalho
-tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
-tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
+# Garante que a sessão tmux existe e continua viva (se já existir, não destrói)
+if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
+fi
 
 # ==========================================
 # TIMESTAMP INICIAL
@@ -174,14 +175,14 @@ clear
 echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
 echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}          │${NC}"
 echo -e "${BLUE}     │                                                  │${NC}"
-echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}GOOGLE SHELL${BLUE}    ${YELLOW}TMUX SESSÃO ATIVA${BLUE} │${NC}"
+echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}GOOGLE SHELL${BLUE}    ${YELLOW}TMUX SESSÃO ÚNICA${BLUE} │${NC}"
 echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
 echo ""
 echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
 echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
 echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
 echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos com sessão persistente (100ms)...${NC}"
+echo -e "${GREEN}     [✓] Monitorando comandos com sessão única contínua (100ms)...${NC}"
 echo ""
 
 WORKSPACE_LIMPO=false
@@ -284,15 +285,20 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        echo -e "${GREEN}[✓] Comando executado na sessão persistente.${NC}"
+        echo -e "${GREEN}[✓] Comando enviado para a sessão contínua.${NC}"
 
-        # Envia o comando para a sessão tmux simulando o Enter real
+        # Se a sessão tmux porventura caiu, recria mantendo o espaço de trabalho
+        if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+            tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
+        fi
+
+        # Envia o comando para a mesma sessão única e aperta Enter
         tmux send-keys -t "$TMUX_SESSION" "$CMD" Enter
         
-        # Aguarda um curtíssimo instante para o processo escrever a saída
-        sleep 0.2
+        # Pequena pausa para processar a saída
+        sleep 0.3
 
-        # Captura as últimas linhas da tela do tmux para enviar de volta como resposta
+        # Captura o painel atualizado da sessão única
         SAIDA=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -50)
         DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
         RESULTADO="[$DATA_HORA]\n$SAIDA"
