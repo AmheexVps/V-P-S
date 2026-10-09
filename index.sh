@@ -28,7 +28,7 @@ if [ ! -f "$DIR_FILE" ]; then
     echo "$VM_WORKSPACE" > "$DIR_FILE"
 fi
 
-# Cria uma FIFO (Named Pipe) para injetar input no processo em loop
+# Cria uma FIFO (Named Pipe) limpa
 rm -f "$INPUT_FIFO"
 mkfifo "$INPUT_FIFO"
 rm -f "$WAITING_FLAG"
@@ -129,7 +129,6 @@ forcar_limpeza_total() {
     DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
     enviar_resposta "[$DATA_HORA] [SISTEMA: $MOTIVO - Interrompendo execuções e limpando workspace...]" "$TIMESTAMP"
 
-    # Remove flags de input pendente
     rm -f "$WAITING_FLAG"
 
     # Mata qualquer processo filho rodando
@@ -148,6 +147,7 @@ forcar_limpeza_total() {
 executar_stream() {
     local COMANDO="$1"
     local TIPO="$2"
+    local INTERATIVO="$3" # Recebe se deve usar input interativo
 
     local BUFFER=""
     local TIMESTAMP
@@ -204,23 +204,35 @@ executar_stream() {
 
     local TEM_SAIDA=false
 
-    # Sinaliza que este comando pode vir a precisar de input interativo
-    touch "$WAITING_FLAG"
-
-    # Execução normal lendo do FIFO para permitir entrada dinâmica de dados
-    while IFS= read -r LINHA || [ -n "$LINHA" ]; do
-        TEM_SAIDA=true
-        LINHA="${LINHA%$'\r'}"
-        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-        SAIDA="[$DATA_HORA] $LINHA"
-        BUFFER+="$SAIDA"$'\n'
-        printf '%s\n' "$SAIDA"
-        
-        TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "$BUFFER" "$TIMESTAMP"
-    done < <(cd "$DIR_ATUAL" && stdbuf -oL -eL bash -c "$COMANDO" < "$INPUT_FIFO" 2>&1)
-
-    rm -f "$WAITING_FLAG"
+    # Se for definido como interativo, liga a flag de espera e lê do FIFO
+    if [ "$INTERATIVO" = "true" ]; then
+        touch "$WAITING_FLAG"
+        while IFS= read -r LINHA || [ -n "$LINHA" ]; do
+            TEM_SAIDA=true
+            LINHA="${LINHA%$'\r'}"
+            DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+            SAIDA="[$DATA_HORA] $LINHA"
+            BUFFER+="$SAIDA"$'\n'
+            printf '%s\n' "$SAIDA"
+            
+            TIMESTAMP=$(obter_timestamp)
+            enviar_resposta "$BUFFER" "$TIMESTAMP"
+        done < <(cd "$DIR_ATUAL" && stdbuf -oL -eL bash -c "$COMANDO" < "$INPUT_FIFO" 2>&1)
+        rm -f "$WAITING_FLAG"
+    else
+        # Execução padrão sem travar o stdin
+        while IFS= read -r LINHA || [ -n "$LINHA" ]; do
+            TEM_SAIDA=true
+            LINHA="${LINHA%$'\r'}"
+            DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+            SAIDA="[$DATA_HORA] $LINHA"
+            BUFFER+="$SAIDA"$'\n'
+            printf '%s\n' "$SAIDA"
+            
+            TIMESTAMP=$(obter_timestamp)
+            enviar_resposta "$BUFFER" "$TIMESTAMP"
+        done < <(cd "$DIR_ATUAL" && stdbuf -oL -eL bash -c "$COMANDO" 2>&1)
+    fi
 
     if [ "$TEM_SAIDA" = "false" ]; then
         DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
@@ -273,7 +285,7 @@ apt-get install -y curl wget unzip zip build-essential software-properties-commo
 '
     TIMESTAMP_MS=$(obter_timestamp)
     limpar_resposta "$TIMESTAMP_MS"
-    executar_stream "$INST_COMANDO" "INSTALACAO"
+    executar_stream "$INST_COMANDO" "INSTALACAO" "false"
 else
     echo -e "${GREEN}[✓] Dependências já instaladas.${NC}"
 fi
@@ -313,7 +325,7 @@ try:
     data = json.loads(sys.stdin.read())
     current_ms = int(time.time() * 1000)
     if not isinstance(data, dict):
-        print(f"TRUE,{current_ms + 30000}")
+        print(f"TRUE,{current_ms + 30000},false")
     else:
         act = data.get("action", True)
         act_str = "FALSE" if (act is False or str(act).lower() == "false") else "TRUE"
@@ -322,16 +334,21 @@ try:
             exp = int(exp)
         except:
             exp = current_ms + 30000
-        print(f"{act_str},{exp}")
+        
+        # Lê o campo interativo do JSON (pode ser true/false ou string)
+        inter = data.get("interativo", False)
+        inter_str = "true" if (inter is True or str(inter).lower() == "true") else "false"
+        
+        print(f"{act_str},{exp},{inter_str}")
 except:
     current_ms = int(time.time() * 1000)
-    print(f"TRUE,{current_ms + 30000}")
+    print(f"TRUE,{current_ms + 30000},false")
 ' <<EOF
 $DADOS
 EOF
 )
 
-    IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
+    IFS=',' read -r ACTION_VAL EXPIRATION_VAL INTERATIVO_FLAG <<< "$PARSED_VALS"
 
     if [ "$ACTION_VAL" = "FALSE" ]; then
         echo -e "\n${RED}[!] Script desativado via Firebase.${NC}"
@@ -409,37 +426,35 @@ $DADOS
 EOF
 )
 
-    # Verifica se chegou algum texto para preencher
-    if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
-        # SE houver um comando rodando e esperando entrada (flag ativa)
-        if [ -f "$WAITING_FLAG" ]; then
-            echo ""
-            echo -e "${YELLOW}╔══════════════════════════════════════════════════════════╗${NC}"
-            echo -e "${YELLOW}║            ENVIANDO INPUT PARA O PROCESSO                ║${NC}"
-            echo -e "${YELLOW}╚══════════════════════════════════════════════════════════╝${NC}"
-            echo -e "${WHITE}$CMD${NC}"
-            echo ""
+    # Verifica se a flag de espera está ativa E o servidor definiu que isto é um input/confirmação interativa
+    if [ -f "$WAITING_FLAG" ] && [ "$INTERATIVO_FLAG" = "true" ] && [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
+        echo ""
+        echo -e "${YELLOW}╔══════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${YELLOW}║            ENVIANDO INPUT PARA INTERAÇÃO                 ║${NC}"
+        echo -e "${YELLOW}╚══════════════════════════════════════════════════════════╝${NC}"
+        echo -e "${WHITE}$CMD${NC}"
+        echo ""
 
-            # Injeta o comando na FIFO do processo em execução
-            echo "$CMD" > "$INPUT_FIFO"
+        # Injeta o texto na FIFO do processo em loop atual
+        echo "$CMD" > "$INPUT_FIFO"
 
-            TIMESTAMP_MS=$(obter_timestamp)
-            limpar_resposta "$TIMESTAMP_MS"
+        TIMESTAMP_MS=$(obter_timestamp)
+        limpar_resposta "$TIMESTAMP_MS"
 
-            # Reseta apenas o campo de comando no Firebase
-            curl -s \
-                -X PATCH \
-                -H "Content-Type: application/json" \
-                -d "{
-                    \"id\":\"$ID_GERADO\",
-                    \"comando\":null,
-                    \"data_hora\":$TIMESTAMP_MS
-                }" \
-                "$FIREBASE_URL" \
-                > /dev/null 2>&1
+        # Limpa o comando e reseta a flag interativa no Firebase
+        curl -s \
+            -X PATCH \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"id\":\"$ID_GERADO\",
+                \"comando\":null,
+                \"interativo\":false,
+                \"data_hora\":$TIMESTAMP_MS
+            }" \
+            "$FIREBASE_URL" \
+            > /dev/null 2>&1
 
-            continue
-        fi
+        continue
     fi
 
     if [ -n "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
@@ -460,12 +475,13 @@ EOF
                 \"id\":\"$ID_GERADO\",
                 \"comando\":null,
                 \"cmd_ubuntu\":null,
+                \"interativo\":false,
                 \"data_hora\":$TIMESTAMP_MS
             }" \
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        executar_stream "$CMD_UBUNTU" "UBUNTU" &
+        executar_stream "$CMD_UBUNTU" "UBUNTU" "$INTERATIVO_FLAG" &
 
     elif [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
         echo ""
@@ -484,12 +500,13 @@ EOF
             -d "{
                 \"id\":\"$ID_GERADO\",
                 \"comando\":null,
+                \"interativo\":false,
                 \"data_hora\":$TIMESTAMP_MS
             }" \
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        executar_stream "$CMD" "GERAL" &
+        executar_stream "$CMD" "GERAL" "$INTERATIVO_FLAG" &
     fi
 
     sleep 1
