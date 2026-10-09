@@ -75,9 +75,8 @@ iniciar_novas_sandboxes() {
     [ -z "$IP_ATUAL" ] && IP_ATUAL="127.0.0.1"
 
     ARRAY_SANDBOX_IDS=()
-    EXPIRATION_DEFAULT=$((TIMESTAMP_GLOBAL + (30 * 1000)))
 
-    # Criação das sandboxes e partições individuais no Firebase
+    # Criação das sandboxes e partições individuais no Firebase com expiration = 0 (aguardando)
     for ((i=1; i<=QTD_SANDBOX; i++)); do
         TMUX_SESSION="sandbox_ubuntu_$i"
         SANDBOX_ID="${ID_BASE}-$i"
@@ -89,14 +88,13 @@ iniciar_novas_sandboxes() {
         
         ARRAY_SANDBOX_IDS+=("$SANDBOX_ID")
 
-        # Inicializa a partição individual de cada sandbox no Firebase
         local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SANDBOX_ID}/CMD.json"
         curl -s \
             -X PATCH \
             -H "Content-Type: application/json" \
             -d "{
                 \"id\":\"$SANDBOX_ID\",
-                \"expiration\":$EXPIRATION_DEFAULT,
+                \"expiration\":0,
                 \"data_hora\":$TIMESTAMP_GLOBAL,
                 \"comando\":null,
                 \"resposta\":\"\"
@@ -124,14 +122,14 @@ print(json.dumps(ids))
     echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
     echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}          │${NC}"
     echo -e "${BLUE}     │                                                  │${NC}"
-    echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}QTD: ${QTD_SANDBOX}${BLUE}    ${YELLOW}TMUX ATIVAS${BLUE}         │${NC}"
+    echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}QTD: ${QTD_SANDBOX}${BLUE}    ${YELLOW}AGUARDANDO EXPIRATION${BLUE}│${NC}"
     echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
     echo ""
     echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
     echo -e "${WHITE}     🔹 ID Base    : ${CYAN}$ID_BASE${NC}"
     echo -e "${WHITE}     🔹 Lista Ativa: ${CYAN}$JSON_IDS${NC}"
     echo ""
-    echo -e "${GREEN}     [✓] Monitoramento ativo com partições individuais...${NC}"
+    echo -e "${GREEN}     [✓] Aguardando definição de expiration no Firebase...${NC}"
     echo ""
 }
 
@@ -220,19 +218,17 @@ import sys
 import time
 try:
     data = json.loads(sys.stdin.read())
-    current_ms = int(time.time() * 1000)
     if not isinstance(data, dict):
-        print(f"{current_ms + 30000}")
+        print("0")
     else:
-        exp = data.get("expiration", current_ms + 30000)
+        exp = data.get("expiration", 0)
         try:
             exp = int(exp)
         except:
-            exp = current_ms + 30000
+            exp = 0
         print(f"{exp}")
 except:
-    current_ms = int(time.time() * 1000)
-    print(f"{current_ms + 30000}")
+    print("0")
 ' <<EOF
 $DADOS
 EOF
@@ -240,8 +236,8 @@ EOF
 
     EXPIRATION_VAL="$PARSED_VALS"
 
-    # Se o tempo expirou: Apaga os nós antigos do Firebase, limpa sessões e cria novas sandboxes
-    if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
+    # Se expiration for maior que 0 e o tempo atual já passou do expiration, ele expira e reinicia
+    if [ "$EXPIRATION_VAL" -gt 0 ] && [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
         echo -e "\n${YELLOW}[!] Tempo expirado. Apagando partições antigas e criando novas sandboxes...${NC}"
         forcar_limpeza_total "TEMPO EXPIRADO"
         iniciar_novas_sandboxes
