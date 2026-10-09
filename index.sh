@@ -19,6 +19,7 @@ SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
 DIR_FILE="$SANDBOX_DIR/current_dir"
 FIFO_IN="$SANDBOX_DIR/cmd_fifo"
+OUT_LOG="$SANDBOX_DIR/session_out.log"
 
 mkdir -p "$SANDBOX_DIR"
 mkdir -p "$VM_WORKSPACE"
@@ -27,7 +28,6 @@ if [ ! -f "$DIR_FILE" ]; then
     echo "$VM_WORKSPACE" > "$DIR_FILE"
 fi
 
-# Cria o FIFO para comunicação com a sessão única do bash se não existir
 if [ ! -p "$FIFO_IN" ]; then
     mkfifo "$FIFO_IN"
 fi
@@ -108,17 +108,19 @@ limpar_resposta() {
         > /dev/null 2>&1
 }
 
-# Inicializa a sessão única persistente rodando em background com FIFO
+# Inicializa a sessão única persistente em background
 inicializar_sessao() {
-    if ! pgrep -f "bash.*$FIFO_IN" > /dev/null; then
+    if ! pgrep -f "tail -f.*$FIFO_IN" > /dev/null; then
         DIR_ATUAL=$(cat "$DIR_FILE")
-        # Mantém uma sessão de bash viva lendo do FIFO
-        tail -f "$FIFO_IN" | (
+        (
             cd "$DIR_ATUAL"
             while IFS= read -r cmd_line; do
-                eval "$cmd_line"
-            > /tmp/sandbox_out.log 2>&1
-        ) &
+                DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+                echo "[$DATA_HORA] $cmd_line"
+                eval "$cmd_line" 2>&1
+                echo "----------------------------------------"
+            done < "$FIFO_IN"
+        ) > "$OUT_LOG" 2>&1 &
     fi
 }
 
@@ -128,8 +130,13 @@ executar_stream() {
     local DIR_ATUAL
 
     DIR_ATUAL=$(cat "$DIR_FILE")
+    if [ ! -d "$DIR_ATUAL" ]; then
+        DIR_ATUAL="$VM_WORKSPACE"
+        echo "$VM_WORKSPACE" > "$DIR_FILE"
+    fi
 
     if [ "$COMANDO" = "clear" ]; then
+        > "$OUT_LOG"
         TIMESTAMP=$(obter_timestamp)
         enviar_resposta "[Terminal limpo]" "$TIMESTAMP"
         return 0
@@ -141,8 +148,14 @@ executar_stream() {
         return 0
     fi
 
-    # Tratamento específico para CD
-    if [[ "$COMANDO" =~ ^cd[[:space:]]+(.*)$ ]]; then
+    if [[ "$COMANDO" =~ ^cd[[:space:]]*$ ]]; then
+        DIR_ATUAL="$VM_WORKSPACE"
+        echo "$VM_WORKSPACE" > "$DIR_FILE"
+        echo "cd '$VM_WORKSPACE'" > "$FIFO_IN"
+        TIMESTAMP=$(obter_timestamp)
+        enviar_resposta "Diretório atual: $DIR_ATUAL" "$TIMESTAMP"
+        return 0
+    elif [[ "$COMANDO" =~ ^cd[[:space:]]+(.*)$ ]]; then
         local DESTINO="${BASH_REMATCH[1]}"
         local NOVO_DIR
         NOVO_DIR=$(cd "$DIR_ATUAL" && eval "cd $DESTINO" && pwd)
@@ -159,24 +172,23 @@ executar_stream() {
         return 0
     fi
 
-    # Envia o comando para a sessão persistente via FIFO
+    # Envia o comando para a única sessão persistente
     echo "$COMANDO" > "$FIFO_IN"
-    
+
     sleep 0.8
     TIMESTAMP=$(obter_timestamp)
     
-    # Lê a última saída gerada se houver
     local SAIDA_LOG=""
-    if [ -f /tmp/sandbox_out.log ]; then
-        SAIDA_LOG=$(tail -n 20 /tmp/sandbox_out.log)
+    if [ -f "$OUT_LOG" ]; then
+        SAIDA_LOG=$(tail -n 30 "$OUT_LOG")
     fi
 
-    enviar_resposta "[Comando executado na sessão única]\n$SAIDA_LOG" "$TIMESTAMP"
+    enviar_resposta "$SAIDA_LOG" "$TIMESTAMP"
     return 0
 }
 
 # ==========================================
-# AMBIENTE E INICIALIZAÇÃO
+# AMBIENTE
 # ==========================================
 export DEBIAN_FRONTEND=noninteractive
 
@@ -195,19 +207,36 @@ curl -s \
     "$FIREBASE_URL" \
     > /dev/null 2>&1
 
-# Instalação de dependências essenciais
 if ! command -v node >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
-    apt-get update -y && apt-get install -y curl wget python3 python3-pip nodejs npm procps
+    INST_COMANDO='
+apt-get update -y &&
+apt-get install -y curl wget unzip zip build-essential software-properties-common apt-transport-https ca-certificates gnupg lsb-release python3 python3-pip python3-dev nodejs npm jq net-tools iputils-ping nano procps
+'
+    TIMESTAMP_MS=$(obter_timestamp)
+    limpar_resposta "$TIMESTAMP_MS"
+    inicializar_sessao
+    executar_stream "$INST_COMANDO"
+else
+    echo -e "${GREEN}[✓] Dependências já instaladas.${NC}"
 fi
 
-# Inicializa a sessão única
 inicializar_sessao
 
 clear
 echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
 echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / SESSÃO ÚNICA PERSISTENTE${BLUE}      │${NC}"
+echo -e "${BLUE}     │                                                  │${NC}"
+echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}GOOGLE SHELL${BLUE}    ${YELLOW}FIREBASE SYNC${BLUE}   │${NC}"
 echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
-echo -e "${GREEN}     [✓] Sessão única pronta e monitorando...${NC}"
+echo ""
+echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
+echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
+echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
+echo ""
+echo -e "${GREEN}     [✓] Sessão única ativa e monitorando...${NC}"
+echo ""
+
+WORKSPACE_LIMPO=false
 
 # ==========================================
 # LOOP PRINCIPAL
@@ -247,7 +276,19 @@ EOF
     if [ "$ACTION_VAL" = "FALSE" ]; then
         rm -rf "$VM_WORKSPACE"
         rm -f "$FIFO_IN"
+        rm -f "$OUT_LOG"
         exit 0
+    fi
+
+    if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
+        if [ "$WORKSPACE_LIMPO" = "false" ]; then
+            rm -rf "$VM_WORKSPACE"
+            mkdir -p "$VM_WORKSPACE"
+            echo "$VM_WORKSPACE" > "$DIR_FILE"
+            WORKSPACE_LIMPO=true
+        fi
+    else
+        WORKSPACE_LIMPO=false
     fi
 
     curl -s \
