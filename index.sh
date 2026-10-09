@@ -143,6 +143,7 @@ if ! command -v tmux >/dev/null 2>&1; then
     apt-get update -y && apt-get install -y tmux >/dev/null 2>&1
 fi
 
+# Garante que a sessão tmux existe e continua viva (se já existir, não destrói)
 if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
 fi
@@ -183,7 +184,7 @@ echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
 echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
 echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
 echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos e expiração (100ms)...${NC}"
+echo -e "${GREEN}     [✓] Monitorando comandos sem data/hora (100ms)...${NC}"
 echo ""
 
 # ==========================================
