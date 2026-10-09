@@ -18,8 +18,6 @@ NC='\033[0m'
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
 DIR_FILE="$SANDBOX_DIR/current_dir"
-INPUT_FIFO="$SANDBOX_DIR/input_fifo"
-WAITING_FLAG="$SANDBOX_DIR/waiting_input"
 
 mkdir -p "$SANDBOX_DIR"
 mkdir -p "$VM_WORKSPACE"
@@ -27,10 +25,6 @@ mkdir -p "$VM_WORKSPACE"
 if [ ! -f "$DIR_FILE" ]; then
     echo "$VM_WORKSPACE" > "$DIR_FILE"
 fi
-
-rm -f "$INPUT_FIFO"
-mkfifo "$INPUT_FIFO"
-rm -f "$WAITING_FLAG"
 
 # ==========================================
 # IDENTIFICAÇÃO
@@ -60,6 +54,9 @@ obter_timestamp() {
     python3 -c 'import time; print(int(time.time() * 1000))'
 }
 
+# ------------------------------------------
+# ESCAPA TEXTO PARA JSON
+# ------------------------------------------
 json_escape() {
     python3 -c '
 import json
@@ -68,6 +65,9 @@ print(json.dumps(sys.stdin.read()))
 '
 }
 
+# ------------------------------------------
+# ENVIA SOMENTE RESPOSTA
+# ------------------------------------------
 enviar_resposta() {
     local TEXTO="$1"
     local TIMESTAMP="$2"
@@ -90,6 +90,9 @@ enviar_resposta() {
         > /dev/null 2>&1
 }
 
+# ------------------------------------------
+# LIMPA SOMENTE A RESPOSTA
+# ------------------------------------------
 limpar_resposta() {
     local TIMESTAMP="$1"
 
@@ -108,6 +111,9 @@ limpar_resposta() {
         > /dev/null 2>&1
 }
 
+# ------------------------------------------
+# FUNÇÃO DE EMERGÊNCIA: MATA TUDO E LIMPA WORKSPACE
+# ------------------------------------------
 forcar_limpeza_total() {
     local MOTIVO="$1"
     local TIMESTAMP
@@ -116,19 +122,22 @@ forcar_limpeza_total() {
     DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
     enviar_resposta "[$DATA_HORA] [SISTEMA: $MOTIVO - Interrompendo execuções e limpando workspace...]" "$TIMESTAMP"
 
-    rm -f "$WAITING_FLAG"
+    # Mata qualquer processo filho rodando
     pkill -P $$ 2>/dev/null
     jobs -p | xargs kill -9 2>/dev/null
 
+    # Limpa de vez o workspace
     rm -rf "$VM_WORKSPACE"
     mkdir -p "$VM_WORKSPACE"
     echo "$VM_WORKSPACE" > "$DIR_FILE"
 }
 
+# ------------------------------------------
+# EXECUTA COMANDO COM SUPORTE A CD, CLEAR, EXIT
+# ------------------------------------------
 executar_stream() {
     local COMANDO="$1"
     local TIPO="$2"
-    local INTERATIVO="$3"
 
     local BUFFER=""
     local TIMESTAMP
@@ -143,6 +152,7 @@ executar_stream() {
         echo "$VM_WORKSPACE" > "$DIR_FILE"
     fi
 
+    # Tratamento para o comando CLEAR
     if [ "$COMANDO" = "clear" ]; then
         TIMESTAMP=$(obter_timestamp)
         DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
@@ -150,6 +160,7 @@ executar_stream() {
         return 0
     fi
 
+    # Tratamento para EXIT / EXITE
     if [ "$COMANDO" = "exit" ] || [ "$COMANDO" = "exite" ]; then
         TIMESTAMP=$(obter_timestamp)
         DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
@@ -157,6 +168,7 @@ executar_stream() {
         return 0
     fi
 
+    # Tratamento para o comando CD
     if [[ "$COMANDO" =~ ^cd[[:space:]]*$ ]]; then
         DIR_ATUAL="$VM_WORKSPACE"
         echo "$VM_WORKSPACE" > "$DIR_FILE"
@@ -182,33 +194,18 @@ executar_stream() {
 
     local TEM_SAIDA=false
 
-    if [ "$INTERATIVO" = "true" ]; then
-        touch "$WAITING_FLAG"
-        while IFS= read -r LINHA || [ -n "$LINHA" ]; do
-            TEM_SAIDA=true
-            LINHA="${LINHA%$'\r'}"
-            DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-            SAIDA="[$DATA_HORA] $LINHA"
-            BUFFER+="$SAIDA"$'\n'
-            printf '%s\n' "$SAIDA"
-            
-            TIMESTAMP=$(obter_timestamp)
-            enviar_resposta "$BUFFER" "$TIMESTAMP"
-        done < <(cd "$DIR_ATUAL" && stdbuf -oL -eL bash -c "$COMANDO" < "$INPUT_FIFO" 2>&1)
-        rm -f "$WAITING_FLAG"
-    else
-        while IFS= read -r LINHA || [ -n "$LINHA" ]; do
-            TEM_SAIDA=true
-            LINHA="${LINHA%$'\r'}"
-            DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-            SAIDA="[$DATA_HORA] $LINHA"
-            BUFFER+="$SAIDA"$'\n'
-            printf '%s\n' "$SAIDA"
-            
-            TIMESTAMP=$(obter_timestamp)
-            enviar_resposta "$BUFFER" "$TIMESTAMP"
-        done < <(cd "$DIR_ATUAL" && stdbuf -oL -eL bash -c "$COMANDO" 2>&1)
-    fi
+    # Execução normal dos comandos mantendo o diretório atual
+    while IFS= read -r LINHA || [ -n "$LINHA" ]; do
+        TEM_SAIDA=true
+        LINHA="${LINHA%$'\r'}"
+        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+        SAIDA="[$DATA_HORA] $LINHA"
+        BUFFER+="$SAIDA"$'\n'
+        printf '%s\n' "$SAIDA"
+        
+        TIMESTAMP=$(obter_timestamp)
+        enviar_resposta "$BUFFER" "$TIMESTAMP"
+    done < <(cd "$DIR_ATUAL" && stdbuf -oL -eL bash -c "$COMANDO" 2>&1)
 
     if [ "$TEM_SAIDA" = "false" ]; then
         DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
@@ -220,11 +217,20 @@ executar_stream() {
     return 0
 }
 
+# ==========================================
+# AMBIENTE
+# ==========================================
 export DEBIAN_FRONTEND=noninteractive
 
+# ==========================================
+# TIMESTAMP INICIAL
+# ==========================================
 TIMESTAMP_MS=$(obter_timestamp)
 EXPIRATION_DEFAULT=$((TIMESTAMP_MS + (30 * 1000)))
 
+# ==========================================
+# REGISTRO INICIAL
+# ==========================================
 curl -s \
     -X PATCH \
     -H "Content-Type: application/json" \
@@ -237,8 +243,14 @@ curl -s \
     "$FIREBASE_URL" \
     > /dev/null 2>&1
 
+# ==========================================
+# INSTALAÇÃO DE DEPENDÊNCIAS
+# ==========================================
 if ! command -v node >/dev/null 2>&1 || \
    ! command -v python3 >/dev/null 2>&1; then
+
+    echo -e "${YELLOW}[*] Dependências ausentes.${NC}"
+    echo -e "${YELLOW}[*] Instalação iniciada.${NC}"
 
     INST_COMANDO='
 apt-get update -y &&
@@ -246,9 +258,14 @@ apt-get install -y curl wget unzip zip build-essential software-properties-commo
 '
     TIMESTAMP_MS=$(obter_timestamp)
     limpar_resposta "$TIMESTAMP_MS"
-    executar_stream "$INST_COMANDO" "INSTALACAO" "false"
+    executar_stream "$INST_COMANDO" "INSTALACAO"
+else
+    echo -e "${GREEN}[✓] Dependências já instaladas.${NC}"
 fi
 
+# ==========================================
+# INTERFACE VISUAL
+# ==========================================
 clear
 
 echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
@@ -266,6 +283,9 @@ echo ""
 
 WORKSPACE_LIMPO=false
 
+# ==========================================
+# LOOP PRINCIPAL
+# ==========================================
 while true; do
     TIMESTAMP_MS=$(obter_timestamp)
     DADOS=$(curl -s "$FIREBASE_URL")
@@ -273,33 +293,35 @@ while true; do
     PARSED_VALS=$(python3 -c '
 import json
 import sys
+import time
 try:
     data = json.loads(sys.stdin.read())
+    current_ms = int(time.time() * 1000)
     if not isinstance(data, dict):
-        print("TRUE,0,false")
+        print(f"TRUE,{current_ms + 30000}")
     else:
         act = data.get("action", True)
         act_str = "FALSE" if (act is False or str(act).lower() == "false") else "TRUE"
-        exp = int(data.get("expiration", 0))
-        
-        inter = data.get("interativo", False)
-        if isinstance(inter, str):
-            inter_str = "true" if inter.lower() in ("true", "1", "yes") else "false"
-        else:
-            inter_str = "true" if inter is True else "false"
-            
-        print(f"{act_str},{exp},{inter_str}")
+        exp = data.get("expiration", current_ms + 30000)
+        try:
+            exp = int(exp)
+        except:
+            exp = current_ms + 30000
+        print(f"{act_str},{exp}")
 except:
-    print("TRUE,0,false")
+    current_ms = int(time.time() * 1000)
+    print(f"TRUE,{current_ms + 30000}")
 ' <<EOF
 $DADOS
 EOF
 )
 
-    IFS=',' read -r ACTION_VAL EXPIRATION_VAL INTERATIVO_FLAG <<< "$PARSED_VALS"
+    IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
     if [ "$ACTION_VAL" = "FALSE" ]; then
+        echo -e "\n${RED}[!] Script desativado via Firebase.${NC}"
         forcar_limpeza_total "DESATIVADO VIA FIREBASE"
+        
         TIMESTAMP_MS=$(obter_timestamp)
         curl -s \
             -X PATCH \
@@ -311,11 +333,15 @@ EOF
             }" \
             "$FIREBASE_URL" \
             > /dev/null 2>&1
+
+        echo -e "${GREEN}[✓] Workspace limpo.${NC}"
+        echo -e "${GREEN}[✓] Encerrando.${NC}"
         exit 0
     fi
 
-    if [ "$EXPIRATION_VAL" -gt 0 ] && [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
+    if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
         if [ "$WORKSPACE_LIMPO" = "false" ]; then
+            echo -e "\n${YELLOW}[!] Tempo expirado. Forçando interrupção e limpeza do workspace...${NC}"
             forcar_limpeza_total "TEMPO EXPIRADO"
             WORKSPACE_LIMPO=true
         fi
@@ -333,7 +359,7 @@ EOF
         "$FIREBASE_URL" \
         > /dev/null 2>&1
 
-    if [ "$EXPIRATION_VAL" -gt 0 ] && [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
+    if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
         sleep 1
         continue
     fi
@@ -368,38 +394,14 @@ $DADOS
 EOF
 )
 
-    # Captura exclusivamente o input se estiver esperando e a flag estiver ativa
-    if [ -f "$WAITING_FLAG" ] && [ "$INTERATIVO_FLAG" = "true" ] && [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
-        echo ""
-        echo -e "${YELLOW}╔══════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${YELLOW}║            ENVIANDO INPUT PARA INTERAÇÃO                 ║${NC}"
-        echo -e "${YELLOW}╚══════════════════════════════════════════════════════════╝${NC}"
-        echo -e "${WHITE}$CMD${NC}"
-        echo ""
-
-        echo "$CMD" > "$INPUT_FIFO"
-
-        TIMESTAMP_MS=$(obter_timestamp)
-        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-        
-        enviar_resposta "[$DATA_HORA] [INPUT ENVIADO]: $CMD" "$TIMESTAMP_MS"
-
-        curl -s \
-            -X PATCH \
-            -H "Content-Type: application/json" \
-            -d "{
-                \"id\":\"$ID_GERADO\",
-                \"comando\":null,
-                \"interativo\":false,
-                \"data_hora\":$TIMESTAMP_MS
-            }" \
-            "$FIREBASE_URL" \
-            > /dev/null 2>&1
-
-        continue
-    fi
-
     if [ -n "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
+        echo ""
+        echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║               NOVO COMANDO UBUNTU                       ║${NC}"
+        echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
+        echo -e "${WHITE}$CMD_UBUNTU${NC}"
+        echo ""
+
         TIMESTAMP_MS=$(obter_timestamp)
         limpar_resposta "$TIMESTAMP_MS"
 
@@ -410,15 +412,21 @@ EOF
                 \"id\":\"$ID_GERADO\",
                 \"comando\":null,
                 \"cmd_ubuntu\":null,
-                \"interativo\":false,
                 \"data_hora\":$TIMESTAMP_MS
             }" \
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        executar_stream "$CMD_UBUNTU" "UBUNTU" "$INTERATIVO_FLAG" &
+        executar_stream "$CMD_UBUNTU" "UBUNTU" &
 
     elif [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
+        echo ""
+        echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║                  NOVO COMANDO                           ║${NC}"
+        echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
+        echo -e "${WHITE}$CMD${NC}"
+        echo ""
+
         TIMESTAMP_MS=$(obter_timestamp)
         limpar_resposta "$TIMESTAMP_MS"
 
@@ -428,13 +436,12 @@ EOF
             -d "{
                 \"id\":\"$ID_GERADO\",
                 \"comando\":null,
-                \"interativo\":false,
                 \"data_hora\":$TIMESTAMP_MS
             }" \
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        executar_stream "$CMD" "GERAL" "$INTERATIVO_FLAG" &
+        executar_stream "$CMD" "GERAL" &
     fi
 
     sleep 1
