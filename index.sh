@@ -56,7 +56,7 @@ obter_timestamp() {
 }
 
 # ------------------------------------------
-# ESCAPA TEXTO PARA JSON (Usado apenas para enviar ao Firebase)
+# ESCAPA TEXTO PARA JSON
 # ------------------------------------------
 json_escape() {
     python3 -c '
@@ -113,7 +113,7 @@ limpar_resposta() {
 }
 
 # ------------------------------------------
-# FUNÇÃO DE EMERGÊNCIA / EXPIRAÇÃO
+# FUNÇÃO DE EMERGÊNCIA / EXPIRAÇÃO: MATA TUDO E APAGA TUDO
 # ------------------------------------------
 forcar_limpeza_total() {
     local MOTIVO="$1"
@@ -122,10 +122,14 @@ forcar_limpeza_total() {
     
     enviar_resposta "[SISTEMA: $MOTIVO - Encerrando sessão tmux e limpando arquivos...]" "$TIMESTAMP"
 
+    # Destroi a sessão tmux
     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
+
+    # Mata processos filhos
     pkill -P $$ 2>/dev/null
     jobs -p | xargs kill -9 2>/dev/null
 
+    # Remove todos os arquivos do workspace e sandbox de vez
     rm -rf "$VM_WORKSPACE"
     rm -rf "$SANDBOX_DIR"
 }
@@ -139,10 +143,10 @@ if ! command -v tmux >/dev/null 2>&1; then
     apt-get update -y && apt-get install -y tmux >/dev/null 2>&1
 fi
 
+# Garante que a sessão tmux existe e define o PS1 personalizado
 if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
-    # Oculta completamente o prompt do terminal dentro da sessão tmux
-    tmux send-keys -t "$TMUX_SESSION" "export PS1=''" Enter
+    tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS ~# '" Enter
 fi
 
 # ==========================================
@@ -181,7 +185,7 @@ echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
 echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
 echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
 echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos em Bash puro (100ms)...${NC}"
+echo -e "${GREEN}     [✓] Monitorando comandos com prompt personalizado (100ms)...${NC}"
 echo ""
 
 # ==========================================
@@ -219,6 +223,7 @@ EOF
 
     IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
+    # Se action for FALSE ou o tempo tiver expirado, limpa tudo e encerra
     if [ "$ACTION_VAL" = "FALSE" ] || [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
         MOTIVO="DESATIVADO VIA FIREBASE"
         [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ] && MOTIVO="TEMPO EXPIRADO"
@@ -237,9 +242,11 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
+        echo -e "\n${RED}[!] Sessão encerrada, arquivos limpos e script finalizado.${NC}"
         exit 0
     fi
 
+    # Atualiza o data_hora a cada ciclo no loop principal
     curl -s \
         -X PATCH \
         -H "Content-Type: application/json" \
@@ -269,6 +276,7 @@ EOF
         TIMESTAMP_MS=$(obter_timestamp)
         limpar_resposta "$TIMESTAMP_MS"
 
+        # Limpa o comando no Firebase imediatamente
         curl -s \
             -X PATCH \
             -H "Content-Type: application/json" \
@@ -280,20 +288,39 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        echo -e "${GREEN}[✓] Comando executado.${NC}"
+        echo -e "${GREEN}[✓] Comando executado na sessão contínua.${NC}"
 
         if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
             tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
-            tmux send-keys -t "$TMUX_SESSION" "export PS1=''" Enter
+            tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS ~# '" Enter
         fi
 
-        # Envia o comando para o tmux
+        # Envia o comando para a sessão tmux
         tmux send-keys -t "$TMUX_SESSION" "$CMD" Enter
         
         sleep 0.3
 
-        # Captura pura da tela do tmux formatada em Bash
-        SAIDA_LIMPA=$(tmux capture-pane -t "$TMUX_SESSION" -p -S -20 | grep -v "export PS1" | sed '/^[[:space:]]*$/d')
+        # Captura o painel e limpa os prompts root@AMHEEX-VPS mantendo apenas o resultado puro
+        SAIDA_LIMPA=$(python3 -c '
+import subprocess
+import re
+
+try:
+    out = subprocess.check_output(["tmux", "capture-pane", "-t", "sandbox_ubuntu", "-p", "-S", "-30"]).decode("utf-8")
+    linhas = out.splitlines()
+    
+    linhas_limpas = []
+    for l in linhas:
+        stripped = l.strip()
+        # Remove linhas que sejam apenas o prompt do sistema
+        if "root@AMHEEX-VPS ~#" in stripped or not stripped:
+            continue
+        linhas_limpas.append(l)
+        
+    print("\n".join(linhas_limpas).strip())
+except Exception as e:
+    print(str(e))
+')
 
         TIMESTAMP_MS=$(obter_timestamp)
         enviar_resposta "$SAIDA_LIMPA" "$TIMESTAMP_MS"
