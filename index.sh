@@ -1,4 +1,4 @@
-#!/usr/init/env bash
+#!/usr/bin/env bash
 set +H
 
 # ==========================================
@@ -113,7 +113,7 @@ limpar_resposta() {
 }
 
 # ------------------------------------------
-# INICIALIZA OU VERIFICA SESSÃO TMUX
+# INICIALIZA OU VERIFICA SESSÃO TMUX ÚNICA
 # ------------------------------------------
 inicializar_tmux() {
     if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
@@ -126,7 +126,7 @@ inicializar_tmux() {
 }
 
 # ------------------------------------------
-# EXECUTA COMANDO NA SESSÃO TMUX ÚNICA
+# EXECUTA COMANDO NA SESSÃO TMUX ÚNICA (COM SUPORTE A INTERATIVOS E CD)
 # ------------------------------------------
 executar_stream() {
     local COMANDO="$1"
@@ -139,32 +139,32 @@ executar_stream() {
     if [ "$COMANDO" = "exit" ] || [ "$COMANDO" = "exite" ]; then
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
         TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "[Sessão Tmux encerrada]" "$TIMESTAMP"
+        enviar_resposta "[Sessão de comando encerrada]" "$TIMESTAMP"
         return 0
     fi
 
-    # 1. Limpa totalmente o painel do tmux antes de executar
+    # 1. Limpa totalmente o terminal tmux antes de rodar o comando
     tmux send-keys -t "$TMUX_SESSION" "clear" C-m
     sleep 0.2
 
-    # 2. Envia o comando real de forma oculta
+    # 2. Envia o comando real de forma oculta para o terminal do Ubuntu (Tmux)
     tmux send-keys -t "$TMUX_SESSION" "$COMANDO" C-m
     
     # Pausa para o comando processar e renderizar na tela
     sleep 0.8
 
-    # 3. Captura exatamente a tela inteira do Tmux atual
+    # 3. Captura exatamente a tela inteira atual do Tmux
     local SAIDA
     SAIDA=$(tmux capture-pane -t "$TMUX_SESSION" -p)
 
-    # Atualiza o diretório atual persistido
+    # Atualiza o diretório atual persistido automaticamente (suporte a cd)
     local DIR_ATUAL
     DIR_ATUAL=$(tmux display-message -p -t "$TMUX_SESSION" "#{pane_current_path}")
     if [ -d "$DIR_ATUAL" ]; then
         echo "$DIR_ATUAL" > "$DIR_FILE"
     fi
 
-    # Envia a resposta completa para o Firebase
+    # Envia a resposta completa capturada para o Firebase
     TIMESTAMP=$(obter_timestamp)
     enviar_resposta "$SAIDA" "$TIMESTAMP"
 
@@ -204,6 +204,9 @@ if ! command -v node >/dev/null 2>&1 || \
    ! command -v python3 >/dev/null 2>&1 || \
    ! command -v tmux >/dev/null 2>&1; then
 
+    echo -e "${YELLOW}[*] Dependências ausentes.${NC}"
+    echo -e "${YELLOW}[*] Instalação iniciada.${NC}"
+
     INST_COMANDO='
 apt-get update -y &&
 apt-get install -y curl wget unzip zip build-essential software-properties-common apt-transport-https ca-certificates gnupg lsb-release python3 python3-pip python3-dev nodejs npm jq net-tools iputils-ping nano screen tmux
@@ -211,8 +214,11 @@ apt-get install -y curl wget unzip zip build-essential software-properties-commo
     TIMESTAMP_MS=$(obter_timestamp)
     limpar_resposta "$TIMESTAMP_MS"
     eval "$INST_COMANDO"
+else
+    echo -e "${GREEN}[✓] Dependências já instaladas.${NC}"
 fi
 
+# Inicializa a sessão Tmux persistente
 inicializar_tmux
 
 # ==========================================
@@ -221,9 +227,9 @@ inicializar_tmux
 clear
 
 echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
-echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX (TMUX)${BLUE}     │${NC}"
+echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / UBUNTU TERMINAL (TMUX)${BLUE}         │${NC}"
 echo -e "${BLUE}     │                                                  │${NC}"
-echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}GOOGLE SHELL${BLUE}    ${YELLOW}FIREBASE SYNC${BLUE}   │${NC}"
+echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}UBUNTU SHELL${BLUE}    ${YELLOW}FIREBASE SYNC${BLUE}   │${NC}"
 echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
 echo ""
 echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
@@ -272,6 +278,7 @@ EOF
     IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
     if [ "$ACTION_VAL" = "FALSE" ]; then
+        echo -e "\n${RED}[!] Script desativado via Firebase.${NC}"
         TIMESTAMP_MS=$(obter_timestamp)
         curl -s \
             -X PATCH \
@@ -286,11 +293,14 @@ EOF
 
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
         rm -rf "$VM_WORKSPACE"
+        echo -e "${GREEN}[✓] Workspace e Sessão Tmux limpos.${NC}"
+        echo -e "${GREEN}[✓] Encerrando.${NC}"
         exit 0
     fi
 
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
         if [ "$WORKSPACE_LIMPO" = "false" ]; then
+            echo -e "\n${YELLOW}[!] Tempo expirado. Limpando workspace...${NC}"
             tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
             rm -rf "$VM_WORKSPACE"
             mkdir -p "$VM_WORKSPACE"
@@ -302,6 +312,7 @@ EOF
         WORKSPACE_LIMPO=false
     fi
 
+    # Atualiza o data_hora a cada 1 segundo no loop principal
     curl -s \
         -X PATCH \
         -H "Content-Type: application/json" \
@@ -378,6 +389,7 @@ EOF
         executar_stream "$CMD" "GERAL" &
     fi
 
+    # Pausa de 1 segundo por ciclo
     sleep 1
 
 done
