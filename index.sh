@@ -23,7 +23,6 @@ echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}   
 echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
 echo ""
 
-# Usa a quantidade fixa definida no topo do código
 QTD_SANDBOX=${QTD_SANDBOX_FIXA}
 
 echo -e "${GREEN}[✓] Configuração automática definida: ${QTD_SANDBOX} sandbox(es)...${NC}"
@@ -63,14 +62,14 @@ if ! command -v tmux >/dev/null 2>&1; then
     apt-get update -y && apt-get install -y tmux >/dev/null 2>&1
 fi
 
-# Variáveis globais para rastrear os IDs das sandboxes ativas
+# Arrays globais para rastrear os IDs e sessões individualmente
 declare -a ARRAY_SANDBOX_IDS=()
 TIMESTAMP_GLOBAL=""
 
 # ==========================================
-# FUNÇÃO PARA CRIAR/INICIALIZAR SANDBOXES
+# FUNÇÃO PARA CRIAR TODAS AS SANDBOXES INICIAIS
 # ==========================================
-iniciar_novas_sandboxes() {
+iniciar_todas_sandboxes() {
     TIMESTAMP_GLOBAL=$(obter_timestamp)
     ID_BASE="ID${TIMESTAMP_GLOBAL}"
 
@@ -80,10 +79,10 @@ iniciar_novas_sandboxes() {
 
     ARRAY_SANDBOX_IDS=()
 
-    # Define o tempo de expiração padrão fixo de 10 segundos (10000ms) a partir de agora
+    # Cada sandbox inicia com 10s de expiração fixos (ou expiration = 0 se preferir aguardar)
+    # Aqui colocamos expiration = tempo atual + 10 segundos para cada uma individualmente
     EXPIRATION_DEFAULT=$((TIMESTAMP_GLOBAL + (10 * 1000)))
 
-    # Criação das sandboxes e partições individuais no Firebase com 10s de expiração
     for ((i=1; i<=QTD_SANDBOX; i++)); do
         TMUX_SESSION="sandbox_ubuntu_$i"
         SANDBOX_ID="${ID_BASE}-$i"
@@ -117,7 +116,6 @@ ids = sys.argv[1:]
 print(json.dumps(ids))
 ' "${ARRAY_SANDBOX_IDS[@]}")
 
-    # Atualiza a lista unificada de sandbox_id ativas
     curl -s \
         -X PATCH \
         -H "Content-Type: application/json" \
@@ -129,19 +127,19 @@ print(json.dumps(ids))
     echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
     echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}          │${NC}"
     echo -e "${BLUE}     │                                                  │${NC}"
-    echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}QTD: ${QTD_SANDBOX}${BLUE}    ${YELLOW}EXPIRA EM 10s${BLUE}       │${NC}"
+    echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}QTD: ${QTD_SANDBOX}${BLUE}    ${YELLOW}ISOLADAS (10s)${BLUE}     │${NC}"
     echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
     echo ""
     echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
     echo -e "${WHITE}     🔹 ID Base    : ${CYAN}$ID_BASE${NC}"
     echo -e "${WHITE}     🔹 Lista Ativa: ${CYAN}$JSON_IDS${NC}"
     echo ""
-    echo -e "${GREEN}     [✓] Monitoramento e contagem regressiva de 10s ativos...${NC}"
+    echo -e "${GREEN}     [✓] Monitoramento individual por sandbox ativo...${NC}"
     echo ""
 }
 
 # ==========================================
-# FUNÇÕES DE RESPOSTA E LIMPEZA
+# FUNÇÕES DE RESPOSTA E LIMPEZA INDIVIDUAL
 # ==========================================
 enviar_resposta() {
     local SB_ID="$1"
@@ -185,73 +183,74 @@ limpar_resposta() {
         > /dev/null 2>&1
 }
 
-forcar_limpeza_total() {
-    local MOTIVO="$1"
+# Reseta e recria APENAS uma sandbox específica de forma isolada
+reiniciar_sandbox_isolada() {
+    local INDEX="$1"
+    local OLD_SB_ID="${ARRAY_SANDBOX_IDS[$INDEX]}"
+    local SB_NUM=$((INDEX + 1))
+    local TIMESTAMP_NOW
+    TIMESTAMP_NOW=$(obter_timestamp)
     
-    # Apaga cada partição individual antiga do Firebase antes de sumir
-    for sb_id in "${ARRAY_SANDBOX_IDS[@]}"; do
-        curl -s \
-            -X DELETE \
-            "https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${sb_id}.json" \
-            > /dev/null 2>&1
-    done
+    local NEW_SB_ID="ID${TIMESTAMP_NOW}-$SB_NUM"
+    local TMUX_SESSION="sandbox_ubuntu_$SB_NUM"
+    local EXPIRATION_NEW=$((TIMESTAMP_NOW + (10 * 1000)))
 
-    # Mata todas as sessões do tmux e limpa arquivos completamente
-    tmux kill-server 2>/dev/null
-    pkill -9 tmux 2>/dev/null
-    rm -rf "$VM_WORKSPACE"
-    rm -rf "$SANDBOX_DIR"
-    mkdir -p "$SANDBOX_DIR"
-    mkdir -p "$VM_WORKSPACE"
+    echo -e "\n${YELLOW}[!] Sandbox $SB_NUM ($OLD_SB_ID) expirou. Recriando individualmente...${NC}"
+
+    # Apaga o nó antigo no Firebase
+    curl -s -X DELETE "https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${OLD_SB_ID}.json" > /dev/null 2>&1
+
+    # Mata a sessão tmux específica dela e limpa arquivos se necessário
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
+    
+    # Recria a sessão tmux dela
+    tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
+    tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
+
+    # Atualiza o ID no array global
+    ARRAY_SANDBOX_IDS[$INDEX]="$NEW_SB_ID"
+
+    # Inicializa o novo nó no Firebase para essa sandbox isolada
+    local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${NEW_SB_ID}/CMD.json"
+    curl -s \
+        -X PATCH \
+        -H "Content-Type: application/json" \
+        -d "{
+            \"id\":\"$NEW_SB_ID\",
+            \"expiration\":$EXPIRATION_NEW,
+            \"data_hora\":$TIMESTAMP_NOW,
+            \"comando\":null,
+            \"resposta\":\"\"
+        }" \
+        "$FIREBASE_SB_URL" \
+        > /dev/null 2>&1
+
+    # Atualiza a lista unificada ativa no Firebase
+    JSON_IDS=$(python3 -c '
+import json
+import sys
+ids = sys.argv[1:]
+print(json.dumps(ids))
+' "${ARRAY_SANDBOX_IDS[@]}")
+
+    curl -s \
+        -X PATCH \
+        -H "Content-Type: application/json" \
+        -d "{\"sandbox_id\": $JSON_IDS}" \
+        "$FIREBASE_LISTA_URL" \
+        > /dev/null 2>&1
 }
 
-# Inicializa o primeiro ciclo de sandboxes
-iniciar_novas_sandboxes
+# Inicializa todas as sandboxes no começo
+iniciar_todas_sandboxes
 
 # ==========================================
 # LOOP PRINCIPAL DO SERVIDOR (100ms)
 # ==========================================
 while true; do
     TIMESTAMP_MS=$(obter_timestamp)
-    
-    # Verifica a expiração usando a primeira sandbox da lista como referência
-    PRIMEIRA_SB="${ARRAY_SANDBOX_IDS[0]}"
-    FIREBASE_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${PRIMEIRA_SB}/CMD.json"
-    DADOS=$(curl -s "$FIREBASE_URL")
 
-    PARSED_VALS=$(python3 -c '
-import json
-import sys
-import time
-try:
-    data = json.loads(sys.stdin.read())
-    if not isinstance(data, dict):
-        print("0")
-    else:
-        exp = data.get("expiration", 0)
-        try:
-            exp = int(exp)
-        except:
-            exp = 0
-        print(f"{exp}")
-except:
-    print("0")
-' <<EOF
-$DADOS
-EOF
-)
-
-    EXPIRATION_VAL="$PARSED_VALS"
-
-    # Se o tempo atual passou do expiration de 10s, ele limpa tudo e reinicia novas sandboxes automaticamente
-    if [ "$EXPIRATION_VAL" -gt 0 ] && [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
-        echo -e "\n${YELLOW}[!] Tempo de 10s expirado. Apagando partições antigas e criando novas sandboxes...${NC}"
-        forcar_limpeza_total "TEMPO EXPIRADO"
-        iniciar_novas_sandboxes
-        continue
-    fi
-
-    # Varre cada sandbox individualmente para buscar comandos na sua própria partição
+    # Varre cada sandbox INDIVIDUALMENTE para checar sua própria expiração e seus comandos
     for i in "${!ARRAY_SANDBOX_IDS[@]}"; do
         SB_ID="${ARRAY_SANDBOX_IDS[$i]}"
         SB_NUM=$((i + 1))
@@ -259,6 +258,30 @@ EOF
         SB_FIREBASE_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SB_ID}/CMD.json"
 
         SB_DADOS=$(curl -s "$SB_FIREBASE_URL")
+
+        # Lê a expiração específica desta sandbox via Python
+        EXPIRATION_VAL=$(python3 -c '
+import json
+import sys
+try:
+    data = json.loads(sys.stdin.read())
+    if not isinstance(data, dict):
+        print("0")
+    else:
+        exp = data.get("expiration", 0)
+        print(str(int(exp)))
+except:
+    print("0")
+' <<EOF
+$SB_DADOS
+EOF
+)
+
+        # Se o tempo desta sandbox específica expirou, reseta APENAS ela de forma isolada
+        if [ "$EXPIRATION_VAL" -gt 0 ] && [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
+            reiniciar_sandbox_isolada "$i"
+            continue
+        fi
 
         # Atualiza o data_hora da sandbox atual
         curl -s \
@@ -271,6 +294,7 @@ EOF
             "$SB_FIREBASE_URL" \
             > /dev/null 2>&1
 
+        # Busca comando pendente nesta partição específica
         CMD=$(python3 -c '
 import json
 import sys
@@ -300,7 +324,7 @@ EOF
                 "$SB_FIREBASE_URL" \
                 > /dev/null 2>&1
 
-            echo -e "${GREEN}[✓] Comando executado na partição ${SB_ID}.${NC}"
+            echo -e "${GREEN}[✓] Comando executado na partição isolada ${SB_ID}.${NC}"
 
             if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
                 tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
