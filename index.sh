@@ -1,14 +1,7 @@
 #!/usr/bin/env bash
 set +H
 
-# ==========================================
-# CONFIGURAÇÃO FIXA (EDITE AQUI SE QUISER MUDAR)
-# ==========================================
 QTD_SANDBOX_FIXA=5
-
-# ==========================================
-# CONFIGURAÇÃO DE CORES
-# ==========================================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -24,13 +17,6 @@ echo -e "${BLUE}     └──────────────────�
 echo ""
 
 QTD_SANDBOX=${QTD_SANDBOX_FIXA}
-
-echo -e "${GREEN}[✓] Configuração automática definida: ${QTD_SANDBOX} sandbox(es) com IDs fixos...${NC}"
-sleep 1
-
-# ==========================================
-# DIRETÓRIOS E AMBIENTE
-# ==========================================
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
 DIR_FILE="$SANDBOX_DIR/current_dir"
@@ -57,7 +43,6 @@ print(json.dumps(texto))
 }
 
 FIREBASE_LISTA_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/active_sandboxes.json"
-
 export DEBIAN_FRONTEND=noninteractive
 
 if ! command -v tmux >/dev/null 2>&1; then
@@ -66,9 +51,6 @@ fi
 
 declare -a ARRAY_SANDBOX_IDS=()
 
-# ==========================================
-# FUNÇÃO PARA CRIAR TODAS AS SANDBOXES INICIAIS
-# ==========================================
 iniciar_todas_sandboxes() {
     IP_ATUAL=$(curl -s --max-time 10 https://api.ipify.org)
     [ -z "$IP_ATUAL" ] && IP_ATUAL=$(curl -s --max-time 10 https://icanhazip.com)
@@ -79,7 +61,6 @@ iniciar_todas_sandboxes() {
 
     for ((i=1; i<=QTD_SANDBOX; i++)); do
         TMUX_SESSION="sandbox_ubuntu_$i"
-        
         SANDBOX_ID="ID${TIMESTAMP_BASE}-$i"
         
         if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
@@ -132,9 +113,6 @@ print(json.dumps(ids))
     echo ""
 }
 
-# ==========================================
-# FUNÇÕES DE RESPOSTA E LIMPEZA INDIVIDUAL
-# ==========================================
 enviar_resposta() {
     local SB_ID="$1"
     local TEXTO="$2"
@@ -164,7 +142,6 @@ reiniciar_sandbox_isolada() {
     local SB_NUM=$((INDEX + 1))
     local TIMESTAMP_NOW
     TIMESTAMP_NOW=$(obter_timestamp)
-    
     local TMUX_SESSION="sandbox_ubuntu_$SB_NUM"
 
     echo -e "\n${YELLOW}[!] Sandbox $SB_NUM ($SB_ID) expirou. Resetando...${NC}"
@@ -193,9 +170,6 @@ reiniciar_sandbox_isolada() {
 
 iniciar_todas_sandboxes
 
-# ==========================================
-# LOOP PRINCIPAL DO SERVIDOR (100ms)
-# ==========================================
 while true; do
     TIMESTAMP_MS=$(obter_timestamp)
 
@@ -236,7 +210,7 @@ EOF
                 \"id\":\"$SB_ID\",
                 \"data_hora\":$TIMESTAMP_MS
             }" \
-            "$FIREBASE_SB_URL" \
+            "$SB_FIREBASE_URL" \
             > /dev/null 2>&1
 
         CMD=$(python3 -c '
@@ -255,7 +229,6 @@ EOF
 )
 
         if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
-            # Limpa o comando pendente no Firebase imediatamente
             curl -s \
                 -X PATCH \
                 -H "Content-Type: application/json" \
@@ -264,7 +237,7 @@ EOF
                     \"comando\":null,
                     \"data_hora\":$TIMESTAMP_MS
                 }" \
-                "$FIREBASE_SB_URL" \
+                "$SB_FIREBASE_URL" \
                 > /dev/null 2>&1
 
             echo -e "${GREEN}[✓] Executando comando na sandbox ${SB_ID}: $CMD${NC}"
@@ -274,7 +247,6 @@ EOF
                 tmux send-keys -t "$TMUX_SESSION" "export TERM=xterm-256color HOME=/root PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
             fi
 
-            # Envia o comando respeitando as quebras de linha e garantindo o Enter final
             ultimo_caractere="${CMD: -1}"
             
             while IFS= read -r linha_cmd || [ -n "$linha_cmd" ]; do
@@ -291,15 +263,16 @@ EOF
                 tmux send-keys -t "$TMUX_SESSION" Enter
             fi
             
-            # Aguarda o tempo necessário (6 a 7 segundos) para o comando processar e gerar a resposta
+            # Aguarda a estabilização e término do comando
             sleep 6.5
 
-            # Captura a saída mantendo o conteúdo estruturado sem apagar o histórico útil
+            # Isola exclusivamente a resposta do comando recente executado
             SAIDA_LIMPA=$(python3 -c '
 import subprocess
 import sys
 
 session_name = sys.argv[1]
+cmd_executado = sys.argv[2]
 try:
     out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-300"]).decode("utf-8")
     
@@ -308,17 +281,25 @@ try:
     
     linhas = [l.rstrip() for l in out.splitlines()]
     
-    while linhas and not linhas[0]:
-        linhas.pop(0)
-    while linhas and not linhas[-1]:
-        linhas.pop()
+    linhas_filtradas = []
+    gravando = False
+    primeira_linha_cmd = cmd_executado.strip().splitlines()[0] if cmd_executado.strip() else ""
+    
+    for l in linhas:
+        if primeira_linha_cmd and primeira_linha_cmd in l and not gravando:
+            gravando = True
+            linhas_filtradas = []
+        if gravando:
+            linhas_filtradas.append(l)
+            
+    if not linhas_filtradas:
+        linhas_filtradas = linhas[-15:]
         
-    print("\n".join(linhas))
+    print("\n".join(linhas_filtradas).strip())
 except Exception as e:
     print(str(e))
-' "$TMUX_SESSION")
+' "$TMUX_SESSION" "$CMD")
 
-            # Envia a resposta completa para o Firebase
             TIMESTAMP_FIM=$(obter_timestamp)
             enviar_resposta "$SB_ID" "$SAIDA_LIMPA" "$TIMESTAMP_FIM"
         fi
