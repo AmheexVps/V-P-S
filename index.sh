@@ -1,5 +1,7 @@
 #!/bin/bash
 
+sudo apt-get update && sudo apt-get install -y curl jq
+
 URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/active_sandbox.json"
 
 # Função auxiliar para obter o timestamp atual em milissegundos
