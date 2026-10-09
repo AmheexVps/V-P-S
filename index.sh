@@ -18,13 +18,18 @@ NC='\033[0m'
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
 DIR_FILE="$SANDBOX_DIR/current_dir"
-SESSION_NAME="firebase_persistent_session"
+FIFO_IN="$SANDBOX_DIR/cmd_fifo"
 
 mkdir -p "$SANDBOX_DIR"
 mkdir -p "$VM_WORKSPACE"
 
 if [ ! -f "$DIR_FILE" ]; then
     echo "$VM_WORKSPACE" > "$DIR_FILE"
+fi
+
+# Cria o FIFO para comunicação com a sessão única do bash se não existir
+if [ ! -p "$FIFO_IN" ]; then
+    mkfifo "$FIFO_IN"
 fi
 
 # ==========================================
@@ -103,12 +108,17 @@ limpar_resposta() {
         > /dev/null 2>&1
 }
 
-# Garante que a sessão screen única existe
+# Inicializa a sessão única persistente rodando em background com FIFO
 inicializar_sessao() {
-    if ! screen -list | grep -q "$SESSION_NAME"; then
+    if ! pgrep -f "bash.*$FIFO_IN" > /dev/null; then
         DIR_ATUAL=$(cat "$DIR_FILE")
-        screen -d -m -S "$SESSION_NAME" bash
-        screen -S "$SESSION_NAME" -X eval "stuff 'cd $DIR_ATUAL\n'"
+        # Mantém uma sessão de bash viva lendo do FIFO
+        tail -f "$FIFO_IN" | (
+            cd "$DIR_ATUAL"
+            while IFS= read -r cmd_line; do
+                eval "$cmd_line"
+            > /tmp/sandbox_out.log 2>&1
+        ) &
     fi
 }
 
@@ -131,7 +141,7 @@ executar_stream() {
         return 0
     fi
 
-    # Tratamento específico para CD para persistir o diretório
+    # Tratamento específico para CD
     if [[ "$COMANDO" =~ ^cd[[:space:]]+(.*)$ ]]; then
         local DESTINO="${BASH_REMATCH[1]}"
         local NOVO_DIR
@@ -139,7 +149,7 @@ executar_stream() {
         
         if [ $? -eq 0 ] && [ -d "$NOVO_DIR" ]; then
             echo "$NOVO_DIR" > "$DIR_FILE"
-            screen -S "$SESSION_NAME" -X eval "stuff 'cd $NOVO_DIR\n'"
+            echo "cd '$NOVO_DIR'" > "$FIFO_IN"
             TIMESTAMP=$(obter_timestamp)
             enviar_resposta "Diretório atual: $NOVO_DIR" "$TIMESTAMP"
         else
@@ -149,14 +159,19 @@ executar_stream() {
         return 0
     fi
 
-    # Envia o comando para a sessão única do screen e captura a saída recente
-    screen -S "$SESSION_NAME" -X eval "stuff '$COMANDO\n'"
+    # Envia o comando para a sessão persistente via FIFO
+    echo "$COMANDO" > "$FIFO_IN"
     
-    # Pequena pausa para o comando processar e gerar log/resposta
     sleep 0.8
-    
     TIMESTAMP=$(obter_timestamp)
-    enviar_resposta "[Comando enviado para a sessão única: $COMANDO]" "$TIMESTAMP"
+    
+    # Lê a última saída gerada se houver
+    local SAIDA_LOG=""
+    if [ -f /tmp/sandbox_out.log ]; then
+        SAIDA_LOG=$(tail -n 20 /tmp/sandbox_out.log)
+    fi
+
+    enviar_resposta "[Comando executado na sessão única]\n$SAIDA_LOG" "$TIMESTAMP"
     return 0
 }
 
@@ -180,12 +195,12 @@ curl -s \
     "$FIREBASE_URL" \
     > /dev/null 2>&1
 
-# Instalação de dependências (garantindo screen)
-if ! command -v node >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 || ! command -v screen >/dev/null 2>&1; then
-    apt-get update -y && apt-get install -y curl wget python3 python3-pip nodejs npm screen procps
+# Instalação de dependências essenciais
+if ! command -v node >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+    apt-get update -y && apt-get install -y curl wget python3 python3-pip nodejs npm procps
 fi
 
-# Inicializa a sessão única persistente
+# Inicializa a sessão única
 inicializar_sessao
 
 clear
@@ -193,8 +208,6 @@ echo -e "${BLUE}     ┌──────────────────�
 echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / SESSÃO ÚNICA PERSISTENTE${BLUE}      │${NC}"
 echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
 echo -e "${GREEN}     [✓] Sessão única pronta e monitorando...${NC}"
-
-WORKSPACE_LIMPO=false
 
 # ==========================================
 # LOOP PRINCIPAL
@@ -232,8 +245,8 @@ EOF
     IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
     if [ "$ACTION_VAL" = "FALSE" ]; then
-        screen -X -S "$SESSION_NAME" quit 2>/dev/null
         rm -rf "$VM_WORKSPACE"
+        rm -f "$FIFO_IN"
         exit 0
     fi
 
