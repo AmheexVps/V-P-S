@@ -143,7 +143,7 @@ executar_stream() {
         return 0
     fi
 
-    # 1. Limpa totalmente o terminal tmux
+    # 1. Limpa totalmente o terminal tmux antes do comando
     tmux send-keys -t "$TMUX_SESSION" "clear" C-m
     sleep 0.2
 
@@ -153,9 +153,9 @@ executar_stream() {
     # Pausa para o comando processar
     sleep 0.8
 
-    # 3. Captura o painel e remove linhas em branco e possíveis rastros de prompt
+    # 3. Captura o painel e filtra o eco do comando, linhas em branco e prompts
     local SAIDA
-    SAIDA=$(tmux capture-pane -t "$TMUX_SESSION" -p | sed '/^[[:space:]]*$/d' | grep -v "root@")
+    SAIDA=$(tmux capture-pane -t "$TMUX_SESSION" -p | sed '/^[[:space:]]*$/d' | grep -v "root@" | grep -v "$COMANDO")
 
     # Atualiza diretório atual persistido
     local DIR_ATUAL
@@ -164,7 +164,7 @@ executar_stream() {
         echo "$DIR_ATUAL" > "$DIR_FILE"
     fi
 
-    # Envia a resposta limpa para o Firebase
+    # Envia apenas a resposta limpa para o Firebase
     TIMESTAMP=$(obter_timestamp)
     enviar_resposta "$SAIDA" "$TIMESTAMP"
 
@@ -204,9 +204,6 @@ if ! command -v node >/dev/null 2>&1 || \
    ! command -v python3 >/dev/null 2>&1 || \
    ! command -v tmux >/dev/null 2>&1; then
 
-    echo -e "${YELLOW}[*] Dependências ausentes.${NC}"
-    echo -e "${YELLOW}[*] Instalação iniciada.${NC}"
-
     INST_COMANDO='
 apt-get update -y &&
 apt-get install -y curl wget unzip zip build-essential software-properties-common apt-transport-https ca-certificates gnupg lsb-release python3 python3-pip python3-dev nodejs npm jq net-tools iputils-ping nano screen tmux
@@ -214,8 +211,6 @@ apt-get install -y curl wget unzip zip build-essential software-properties-commo
     TIMESTAMP_MS=$(obter_timestamp)
     limpar_resposta "$TIMESTAMP_MS"
     eval "$INST_COMANDO"
-else
-    echo -e "${GREEN}[✓] Dependências já instaladas.${NC}"
 fi
 
 inicializar_tmux
@@ -277,7 +272,6 @@ EOF
     IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
     if [ "$ACTION_VAL" = "FALSE" ]; then
-        echo -e "\n${RED}[!] Script desativado via Firebase.${NC}"
         TIMESTAMP_MS=$(obter_timestamp)
         curl -s \
             -X PATCH \
@@ -292,14 +286,11 @@ EOF
 
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
         rm -rf "$VM_WORKSPACE"
-        echo -e "${GREEN}[✓] Workspace e Sessão Tmux limpos.${NC}"
-        echo -e "${GREEN}[✓] Encerrando.${NC}"
         exit 0
     fi
 
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
         if [ "$WORKSPACE_LIMPO" = "false" ]; then
-            echo -e "\n${YELLOW}[!] Tempo expirado. Limpando workspace...${NC}"
             tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
             rm -rf "$VM_WORKSPACE"
             mkdir -p "$VM_WORKSPACE"
@@ -352,13 +343,6 @@ EOF
 )
 
     if [ -n "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
-        echo ""
-        echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║         NOVO COMANDO UBUNTU (VIA TMUX)                  ║${NC}"
-        echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
-        echo -e "${WHITE}$CMD_UBUNTU${NC}"
-        echo ""
-
         TIMESTAMP_MS=$(obter_timestamp)
         limpar_resposta "$TIMESTAMP_MS"
 
@@ -377,13 +361,6 @@ EOF
         executar_stream "$CMD_UBUNTU" "UBUNTU" &
 
     elif [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
-        echo ""
-        echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║            NOVO COMANDO (VIA TMUX)                      ║${NC}"
-        echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
-        echo -e "${WHITE}$CMD${NC}"
-        echo ""
-
         TIMESTAMP_MS=$(obter_timestamp)
         limpar_resposta "$TIMESTAMP_MS"
 
