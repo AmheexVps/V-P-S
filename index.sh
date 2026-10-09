@@ -25,7 +25,7 @@ echo ""
 
 QTD_SANDBOX=${QTD_SANDBOX_FIXA}
 
-echo -e "${GREEN}[✓] Configuração automática definida: ${QTD_SANDBOX} sandbox(es) aguardando expiration...${NC}"
+echo -e "${GREEN}[✓] Configuração automática definida: ${QTD_SANDBOX} sandbox(es) com IDs fixos...${NC}"
 sleep 1
 
 # ==========================================
@@ -62,7 +62,7 @@ if ! command -v tmux >/dev/null 2>&1; then
     apt-get update -y && apt-get install -y tmux >/dev/null 2>&1
 fi
 
-# Arrays globais para rastrear os IDs próprios e sessões individualmente
+# Arrays globais para rastrear os IDs fixos e sessões individualmente
 declare -a ARRAY_SANDBOX_IDS=()
 
 # ==========================================
@@ -74,13 +74,13 @@ iniciar_todas_sandboxes() {
     [ -z "$IP_ATUAL" ] && IP_ATUAL="127.0.0.1"
 
     ARRAY_SANDBOX_IDS=()
-    TIMESTAMP_NOW=$(obter_timestamp)
+    TIMESTAMP_BASE=$(obter_timestamp)
 
     for ((i=1; i<=QTD_SANDBOX; i++)); do
         TMUX_SESSION="sandbox_ubuntu_$i"
         
-        TS_UNICO=$(obter_timestamp)
-        SANDBOX_ID="ID${TS_UNICO}-$i"
+        # ID gerado APENAS NA PRIMEIRA VEZ para cada sandbox e fixado
+        SANDBOX_ID="ID${TIMESTAMP_BASE}-$i"
         
         if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
             tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
@@ -97,14 +97,12 @@ iniciar_todas_sandboxes() {
             -d "{
                 \"id\":\"$SANDBOX_ID\",
                 \"expiration\":0,
-                \"data_hora\":$TS_UNICO,
+                \"data_hora\":$TIMESTAMP_BASE,
                 \"comando\":null,
                 \"resposta\":\"\"
             }" \
             "$FIREBASE_SB_URL" \
             > /dev/null 2>&1
-            
-        sleep 0.05
     done
 
     JSON_IDS=$(python3 -c '
@@ -125,13 +123,13 @@ print(json.dumps(ids))
     echo -e "${BLUE}     ┌──────────────────────────────────────────────────┐${NC}"
     echo -e "${BLUE}     │  ${WHITE}INFINITE LABS / GOOGLE SHELL SANDBOX${BLUE}          │${NC}"
     echo -e "${BLUE}     │                                                  │${NC}"
-    echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}QTD: ${QTD_SANDBOX}${BLUE}    ${YELLOW}AGUARDANDO EXPIRATION${BLUE}│${NC}"
+    echo -e "${BLUE}     │  ${GREEN}● ONLINE${BLUE}        ${CYAN}QTD: ${QTD_SANDBOX}${BLUE}    ${YELLOW}IDS FIXOS (AGUARDANDO)${BLUE}│${NC}"
     echo -e "${BLUE}     └──────────────────────────────────────────────────┘${NC}"
     echo ""
     echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
     echo -e "${WHITE}     🔹 Lista Ativa: ${CYAN}$JSON_IDS${NC}"
     echo ""
-    echo -e "${GREEN}     [✓] Aguardando definição de expiration no Firebase...${NC}"
+    echo -e "${GREEN}     [✓] Monitoramento com IDs fixos ativo...${NC}"
     echo ""
 }
 
@@ -180,22 +178,19 @@ limpar_resposta() {
         > /dev/null 2>&1
 }
 
-# Reseta e recria APENAS a sandbox específica com expiration 0 (aguardando novo tempo)
+# Reseta APENAS a sandbox específica MANTENDO O MESMO ID e definindo expiration 0
 reiniciar_sandbox_isolada() {
     local INDEX="$1"
-    local OLD_SB_ID="${ARRAY_SANDBOX_IDS[$INDEX]}"
+    local SB_ID="${ARRAY_SANDBOX_IDS[$INDEX]}"
     local SB_NUM=$((INDEX + 1))
     local TIMESTAMP_NOW
     TIMESTAMP_NOW=$(obter_timestamp)
     
-    local NEW_SB_ID="ID${TIMESTAMP_NOW}-$SB_NUM"
     local TMUX_SESSION="sandbox_ubuntu_$SB_NUM"
 
-    echo -e "\n${YELLOW}[!] Sandbox $SB_NUM ($OLD_SB_ID) expirou. Recriando e aguardando novo expiration...${NC}"
+    echo -e "\n${YELLOW}[!] Sandbox $SB_NUM ($SB_ID) expirou. Resetando e aguardando novo expiration...${NC}"
 
-    curl -s -X DELETE "https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${OLD_SB_ID}.json" > /dev/null 2>&1
-
-    # Mata apenas se a sessão tmux existir
+    # Mata apenas se a sessão tmux existir e a recria limpa
     if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
     fi
@@ -203,15 +198,13 @@ reiniciar_sandbox_isolada() {
     tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
     tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
 
-    ARRAY_SANDBOX_IDS[$INDEX]="$NEW_SB_ID"
-
-    # Inicializa com expiration = 0 aguardando
-    local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${NEW_SB_ID}/CMD.json"
+    # Reseta o nó no Firebase MANTENDO O MESMO ID fixo e definindo expiration = 0
+    local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SB_ID}/CMD.json"
     curl -s \
         -X PATCH \
         -H "Content-Type: application/json" \
         -d "{
-            \"id\":\"$NEW_SB_ID\",
+            \"id\":\"$SB_ID\",
             \"expiration\":0,
             \"data_hora\":$TIMESTAMP_NOW,
             \"comando\":null,
@@ -219,23 +212,9 @@ reiniciar_sandbox_isolada() {
         }" \
         "$FIREBASE_SB_URL" \
         > /dev/null 2>&1
-
-    JSON_IDS=$(python3 -c '
-import json
-import sys
-ids = sys.argv[1:]
-print(json.dumps(ids))
-' "${ARRAY_SANDBOX_IDS[@]}")
-
-    curl -s \
-        -X PATCH \
-        -H "Content-Type: application/json" \
-        -d "{\"sandbox_id\": $JSON_IDS}" \
-        "$FIREBASE_LISTA_URL" \
-        > /dev/null 2>&1
 }
 
-# Inicializa todas as sandboxes aguardando no começo
+# Inicializa todas as sandboxes com IDs fixos no começo
 iniciar_todas_sandboxes
 
 # ==========================================
