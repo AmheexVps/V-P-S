@@ -18,9 +18,6 @@ NC='\033[0m'
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
 DIR_FILE="$SANDBOX_DIR/current_dir"
-SESSION_NAME="sandbox_persistent_session"
-OUTPUT_LOG="$SANDBOX_DIR/output.log"
-INPUT_FIFO="$SANDBOX_DIR/input_fifo"
 
 mkdir -p "$SANDBOX_DIR"
 mkdir -p "$VM_WORKSPACE"
@@ -115,63 +112,107 @@ limpar_resposta() {
 }
 
 # ------------------------------------------
-# INICIALIZA SESSÃO PERSISTENTE (SCREEN)
+# FUNÇÃO DE EMERGÊNCIA: MATA TUDO E LIMPA WORKSPACE
 # ------------------------------------------
-iniciar_sessao_persistente() {
-    if ! screen -list | grep -q "$SESSION_NAME"; then
-        DIR_ATUAL=$(cat "$DIR_FILE")
-        [ ! -d "$DIR_ATUAL" ] && DIR_ATUAL="$VM_WORKSPACE"
-        
-        # Cria uma sessão screen desacoplada rodando bash no diretório correto
-        screen -d -m -S "$SESSION_NAME" bash -c "cd '$DIR_ATUAL' && exec bash"
-        sleep 0.5
-    fi
+forcar_limpeza_total() {
+    local MOTIVO="$1"
+    local TIMESTAMP
+    TIMESTAMP=$(obter_timestamp)
+    
+    DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+    enviar_resposta "[$DATA_HORA] [SISTEMA: $MOTIVO - Interrompendo execuções e limpando workspace...]" "$TIMESTAMP"
+
+    # Mata qualquer processo filho rodando (apt, npm, bash scripts em background)
+    pkill -P $$ 2>/dev/null
+    jobs -p | xargs kill -9 2>/dev/null
+
+    # Limpa de vez o workspace
+    rm -rf "$VM_WORKSPACE"
+    mkdir -p "$VM_WORKSPACE"
+    echo "$VM_WORKSPACE" > "$DIR_FILE"
 }
 
 # ------------------------------------------
-# EXECUTA COMANDO NA SESSÃO ÚNICA PERSISTENTE
+# EXECUTA COMANDO COM SUPORTE A CD, CLEAR, EXIT
 # ------------------------------------------
 executar_stream() {
     local COMANDO="$1"
     local TIPO="$2"
-    local TIMESTAMP
 
-    iniciar_sessao_persistente
+    local BUFFER=""
+    local TIMESTAMP
+    local DATA_HORA
+    local LINHA
+    local SAIDA
+    local DIR_ATUAL
+
+    DIR_ATUAL=$(cat "$DIR_FILE")
+    if [ ! -d "$DIR_ATUAL" ]; then
+        DIR_ATUAL="$VM_WORKSPACE"
+        echo "$VM_WORKSPACE" > "$DIR_FILE"
+    fi
 
     # Tratamento para o comando CLEAR
     if [ "$COMANDO" = "clear" ]; then
         TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "[Terminal limpo]" "$TIMESTAMP"
+        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+        enviar_resposta "[$DATA_HORA] [Terminal limpo]" "$TIMESTAMP"
         return 0
     fi
 
     # Tratamento para EXIT / EXITE
     if [ "$COMANDO" = "exit" ] || [ "$COMANDO" = "exite" ]; then
-        screen -S "$SESSION_NAME" -X quit 2>/dev/null
         TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "[Sessão de comando encerrada]" "$TIMESTAMP"
+        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+        enviar_resposta "[$DATA_HORA] [Sessão de comando encerrada]" "$TIMESTAMP"
         return 0
     fi
 
-    # Tratamento especial para comandos 'cd' para atualizar o arquivo de controle de diretório
-    if [[ "$COMANDO" =~ ^cd([[:space:]]+.*)?$ ]]; then
-        screen -S "$SESSION_NAME" -X stuff "$COMANDO; pwd > \"$DIR_FILE\"$(printf \\r)"
-        sleep 0.5
+    # Tratamento para o comando CD
+    if [[ "$COMANDO" =~ ^cd[[:space:]]*$ ]]; then
+        DIR_ATUAL="$VM_WORKSPACE"
+        echo "$VM_WORKSPACE" > "$DIR_FILE"
+        TIMESTAMP=$(obter_timestamp)
+        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+        enviar_resposta "[$DATA_HORA] Diretório atual: $DIR_ATUAL" "$TIMESTAMP"
+        return 0
+    elif [[ "$COMANDO" =~ ^cd[[:space:]]+(.*)$ ]]; then
+        local DESTINO="${BASH_REMATCH[1]}"
         local NOVO_DIR
-        NOVO_DIR=$(cat "$DIR_FILE")
+        NOVO_DIR=$(cd "$DIR_ATUAL" && eval "cd $DESTINO" && pwd)
+        
         TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "Diretório atual: $NOVO_DIR" "$TIMESTAMP"
+        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+        if [ $? -eq 0 ] && [ -d "$NOVO_DIR" ]; then
+            echo "$NOVO_DIR" > "$DIR_FILE"
+            enviar_resposta "[$DATA_HORA] Diretório atual: $NOVO_DIR" "$TIMESTAMP"
+        else
+            enviar_resposta "[$DATA_HORA] cd: $DESTINO: No such file or directory" "$TIMESTAMP"
+        fi
         return 0
     fi
 
-    # Envia o comando para a sessão screen existente sem abrir novas sessões
-    # Captura a saída redirecionando ou lendo o buffer/log se necessário
-    screen -S "$SESSION_NAME" -X stuff "$COMANDO$(printf \\r)"
+    local TEM_SAIDA=false
 
-    # Dá um breve tempo para o comando processar e lê o estado/resposta recente
-    sleep 1
-    TIMESTAMP=$(obter_timestamp)
-    enviar_resposta "[Comando enviado para a sessão interativa]" "$TIMESTAMP"
+    # Execução normal dos outros comandos mantendo o diretório atual
+    while IFS= read -r LINHA || [ -n "$LINHA" ]; do
+        TEM_SAIDA=true
+        LINHA="${LINHA%$'\r'}"
+        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+        SAIDA="[$DATA_HORA] $LINHA"
+        BUFFER+="$SAIDA"$'\n'
+        printf '%s\n' "$SAIDA"
+        
+        TIMESTAMP=$(obter_timestamp)
+        enviar_resposta "$BUFFER" "$TIMESTAMP"
+    done < <(cd "$DIR_ATUAL" && stdbuf -oL -eL bash -c "$COMANDO" 2>&1)
+
+    if [ "$TEM_SAIDA" = "false" ]; then
+        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+        SAIDA="[$DATA_HORA] [Concluído / Sem retorno impresso]"
+        TIMESTAMP=$(obter_timestamp)
+        enviar_resposta "$SAIDA" "$TIMESTAMP"
+    fi
 
     return 0
 }
@@ -188,7 +229,7 @@ TIMESTAMP_MS=$(obter_timestamp)
 EXPIRATION_DEFAULT=$((TIMESTAMP_MS + (30 * 1000)))
 
 # ==========================================
-# REGISTRO INICIAL
+# REGISTRO INICIAL (action: true enviado 1 vez aqui)
 # ==========================================
 curl -s \
     -X PATCH \
@@ -206,20 +247,21 @@ curl -s \
 # INSTALAÇÃO DE DEPENDÊNCIAS
 # ==========================================
 if ! command -v node >/dev/null 2>&1 || \
-   ! command -v python3 >/dev/null 2>&1 || \
-   ! command -v screen >/dev/null 2>&1; then
+   ! command -v python3 >/dev/null 2>&1; then
 
     echo -e "${YELLOW}[*] Dependências ausentes.${NC}"
     echo -e "${YELLOW}[*] Instalação iniciada.${NC}"
 
-    apt-get update -y && \
-    apt-get install -y curl wget unzip zip build-essential software-properties-common apt-transport-https ca-certificates gnupg lsb-release python3 python3-pip python3-dev nodejs npm jq net-tools iputils-ping nano screen tmux
+    INST_COMANDO='
+apt-get update -y &&
+apt-get install -y curl wget unzip zip build-essential software-properties-common apt-transport-https ca-certificates gnupg lsb-release python3 python3-pip python3-dev nodejs npm jq net-tools iputils-ping nano screen tmux
+'
+    TIMESTAMP_MS=$(obter_timestamp)
+    limpar_resposta "$TIMESTAMP_MS"
+    executar_stream "$INST_COMANDO" "INSTALACAO"
 else
-    echo -e "${GREEN}[✓] Dependências já instaladas.${NC}()"
+    echo -e "${GREEN}[✓] Dependências já instaladas.${NC}"
 fi
-
-# Inicializa a sessão screen principal logo no início
-iniciar_sessao_persistente
 
 # ==========================================
 # INTERFACE VISUAL
@@ -236,13 +278,13 @@ echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
 echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
 echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
 echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos em tempo real (Sessão Única Interativa)...${NC}"
+echo -e "${GREEN}     [✓] Monitorando comandos em tempo real...${NC}"
 echo ""
 
 WORKSPACE_LIMPO=false
 
 # ==========================================
-# LOOP PRINCIPAL
+# LOOP PRINCIPAL (PRIORIDADE ABSOLUTA AO SISTEMA)
 # ==========================================
 while true; do
     TIMESTAMP_MS=$(obter_timestamp)
@@ -276,29 +318,40 @@ EOF
 
     IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
+    # PRIORIDADE 1: Se action for FALSE, mata tudo imediatamente, limpa e sai
     if [ "$ACTION_VAL" = "FALSE" ]; then
         echo -e "\n${RED}[!] Script desativado via Firebase.${NC}"
-        screen -S "$SESSION_NAME" -X quit 2>/dev/null
-        rm -rf "$VM_WORKSPACE"
+        forcar_limpeza_total "DESATIVADO VIA FIREBASE"
+        
+        TIMESTAMP_MS=$(obter_timestamp)
+        curl -s \
+            -X PATCH \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"id\":\"$ID_GERADO\",
+                \"action\":false,
+                \"data_hora\":$TIMESTAMP_MS
+            }" \
+            "$FIREBASE_URL" \
+            > /dev/null 2>&1
+
         echo -e "${GREEN}[✓] Workspace limpo.${NC}"
         echo -e "${GREEN}[✓] Encerrando.${NC}"
         exit 0
     fi
 
+    # PRIORIDADE 2: Se expirou o tempo, interrompe qualquer processo e limpa o workspace imediatamente
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
         if [ "$WORKSPACE_LIMPO" = "false" ]; then
-            echo -e "\n${YELLOW}[!] Tempo expirado. Limpando workspace...${NC}"
-            screen -S "$SESSION_NAME" -X quit 2>/dev/null
-            rm -rf "$VM_WORKSPACE"
-            mkdir -p "$VM_WORKSPACE"
-            echo "$VM_WORKSPACE" > "$DIR_FILE"
-            iniciar_sessao_persistente
+            echo -e "\n${YELLOW}[!] Tempo expirado. Forçando interrupção e limpeza do workspace...${NC}"
+            forcar_limpeza_total "TEMPO EXPIRADO"
             WORKSPACE_LIMPO=true
         fi
     else
         WORKSPACE_LIMPO=false
     fi
 
+    # Atualiza o data_hora a cada 1 segundo no loop principal
     curl -s \
         -X PATCH \
         -H "Content-Type: application/json" \
@@ -308,6 +361,12 @@ EOF
         }" \
         "$FIREBASE_URL" \
         > /dev/null 2>&1
+
+    # Se o sistema estiver expirado, ele bloqueia novos comandos até renovar
+    if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
+        sleep 1
+        continue
+    fi
 
     CMD=$(python3 -c '
 import json
@@ -362,7 +421,7 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        executar_stream "$CMD_UBUNTU" "UBUNTU"
+        executar_stream "$CMD_UBUNTU" "UBUNTU" &
 
     elif [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
         echo ""
@@ -386,8 +445,10 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        executar_stream "$CMD" "GERAL"
+        executar_stream "$CMD" "GERAL" &
     fi
 
-    sleep 1
+    # Pausa de 1 segundo por ciclo
+    sleep 0.5
+
 done
