@@ -18,19 +18,20 @@ NC='\033[0m'
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
 DIR_FILE="$SANDBOX_DIR/current_dir"
-PIPE_INPUT="$SANDBOX_DIR/cmd_input.pipe"
+INPUT_FIFO="$SANDBOX_DIR/input_fifo"
+WAITING_FLAG="$SANDBOX_DIR/waiting_input"
 
 mkdir -p "$SANDBOX_DIR"
 mkdir -p "$VM_WORKSPACE"
 
-if [ ! -p "$PIPE_INPUT" ]; then
-    rm -f "$PIPE_INPUT"
-    mkfifo "$PIPE_INPUT"
-fi
-
 if [ ! -f "$DIR_FILE" ]; then
     echo "$VM_WORKSPACE" > "$DIR_FILE"
 fi
+
+# Cria uma FIFO (Named Pipe) para injetar input no processo em loop
+rm -f "$INPUT_FIFO"
+mkfifo "$INPUT_FIFO"
+rm -f "$WAITING_FLAG"
 
 # ==========================================
 # IDENTIFICAÇÃO
@@ -51,12 +52,6 @@ IP_SEM_PONTOS=$(echo "$IP_ATUAL" | tr -d '.')
 ID_GERADO="ID${IP_SEM_PONTOS}"
 
 FIREBASE_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${ID_GERADO}/CMD.json"
-
-# ==========================================
-# VARIÁVEIS DE CONTROLE INTERATIVO
-# ==========================================
-AGUARDANDO_INPUT=false
-PID_PROCESSO_ATUAL=""
 
 # ==========================================
 # FUNÇÕES
@@ -134,19 +129,21 @@ forcar_limpeza_total() {
     DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
     enviar_resposta "[$DATA_HORA] [SISTEMA: $MOTIVO - Interrompendo execuções e limpando workspace...]" "$TIMESTAMP"
 
+    # Remove flags de input pendente
+    rm -f "$WAITING_FLAG"
+
+    # Mata qualquer processo filho rodando
     pkill -P $$ 2>/dev/null
     jobs -p | xargs kill -9 2>/dev/null
 
-    AGUARDANDO_INPUT=false
-    PID_PROCESSO_ATUAL=""
-
+    # Limpa de vez o workspace
     rm -rf "$VM_WORKSPACE"
     mkdir -p "$VM_WORKSPACE"
     echo "$VM_WORKSPACE" > "$DIR_FILE"
 }
 
 # ------------------------------------------
-# EXECUTA COMANDO COM SUPORTE A CD, CLEAR, EXIT E INTERATIVIDADE
+# EXECUTA COMANDO COM SUPORTE A CD, CLEAR, EXIT
 # ------------------------------------------
 executar_stream() {
     local COMANDO="$1"
@@ -207,17 +204,10 @@ executar_stream() {
 
     local TEM_SAIDA=false
 
-    # Remove pipe antigo se houver travamento e recria
-    rm -f "$PIPE_INPUT"
-    mkfifo "$PIPE_INPUT"
+    # Sinaliza que este comando pode vir a precisar de input interativo
+    touch "$WAITING_FLAG"
 
-    # Executa o comando lendo do named pipe para permitir interação em tempo de execução
-    (
-        cd "$DIR_ATUAL"
-        stdbuf -oL -eL bash -c "$COMANDO" < "$PIPE_INPUT" 2>&1
-    ) &
-    PID_PROCESSO_ATUAL=$!
-
+    # Execução normal lendo do FIFO para permitir entrada dinâmica de dados
     while IFS= read -r LINHA || [ -n "$LINHA" ]; do
         TEM_SAIDA=true
         LINHA="${LINHA%$'\r'}"
@@ -228,31 +218,9 @@ executar_stream() {
         
         TIMESTAMP=$(obter_timestamp)
         enviar_resposta "$BUFFER" "$TIMESTAMP"
+    done < <(cd "$DIR_ATUAL" && stdbuf -oL -eL bash -c "$COMANDO" < "$INPUT_FIFO" 2>&1)
 
-        # Heurística para detectar se o processo está aguardando input (ex: [y/N], "digite", "password", etc.)
-        if [[ "$LINHA" =~ \? ]] || [[ "$LINHA" =~ [Ee]nter ]] || [[ "$LINHA" =~ [Dd]igite ]] || [[ "$LINHA" =~ [Cc]onfirm ]] || [[ "$LINHA" =~ \[y\/N\] ]]; then
-            AGUARDANDO_INPUT=true
-            break
-        fi
-    done < <(tail -f /dev/null --pid="$PID_PROCESSO_ATUAL" 2>/dev/null & \
-             # Captura o descritor de saída do processo rodando em background
-             # Como o bash padrão redireciona a saída do subshell, usamos um loop de leitura do processo filho
-             wait "$PID_PROCESSO_ATUAL" 2>/dev/null) # Ajustado na estrutura abaixo para leitura correta
-    
-    # Nota: para simplificar a leitura contínua com captura do PID, usamos o loop abaixo:
-    # (O bloco principal de leitura já lida perfeitamente com o descritor)
-    
-    wait "$PID_PROCESSO_ATUAL" 2>/dev/null
-    PID_PROCESSO_ATUAL=""
-
-    if [ "$AGUARDANDO_INPUT" = "true" ]; then
-        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-        SAIDA="[$DATA_HORA] [Aguardando digitação/confirmação do usuário...]"
-        BUFFER+="$SAIDA"$'\n'
-        TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "$BUFFER" "$TIMESTAMP"
-        return 0
-    fi
+    rm -f "$WAITING_FLAG"
 
     if [ "$TEM_SAIDA" = "false" ]; then
         DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
@@ -441,31 +409,37 @@ $DADOS
 EOF
 )
 
-    # SE ESTIVER AGUARDANDO INPUT, O PRÓXIMO COMANDO ENVIADO VAI PARA O PIPE DO PROCESSO
-    if [ "$AGUARDANDO_INPUT" = "true" ] && ([ -n "$CMD" ] || [ -n "$CMD_UBUNTU" ]); then
-        TEXTO_INPUT="${CMD:-$CMD_UBUNTU}"
-        echo -e "${YELLOW}[*] Enviando confirmação/digitação para o processo interativo...${NC}"
-        
-        # Envia o texto para o named pipe que o processo está escutando
-        echo "$TEXTO_INPUT" > "$PIPE_INPUT"
-        
-        TIMESTAMP_MS=$(obter_timestamp)
-        limpar_resposta "$TIMESTAMP_MS"
+    # Verifica se chegou algum texto para preencher
+    if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
+        # SE houver um comando rodando e esperando entrada (flag ativa)
+        if [ -f "$WAITING_FLAG" ]; then
+            echo ""
+            echo -e "${YELLOW}╔══════════════════════════════════════════════════════════╗${NC}"
+            echo -e "${YELLOW}║            ENVIANDO INPUT PARA O PROCESSO                ║${NC}"
+            echo -e "${YELLOW}╚══════════════════════════════════════════════════════════╝${NC}"
+            echo -e "${WHITE}$CMD${NC}"
+            echo ""
 
-        curl -s \
-            -X PATCH \
-            -H "Content-Type: application/json" \
-            -d "{
-                \"id\":\"$ID_GERADO\",
-                \"comando\":null,
-                \"cmd_ubuntu\":null,
-                \"data_hora\":$TIMESTAMP_MS
-            }" \
-            "$FIREBASE_URL" \
-            > /dev/null 2>&1
+            # Injeta o comando na FIFO do processo em execução
+            echo "$CMD" > "$INPUT_FIFO"
 
-        AGUARDANDO_INPUT=false
-        continue
+            TIMESTAMP_MS=$(obter_timestamp)
+            limpar_resposta "$TIMESTAMP_MS"
+
+            # Reseta apenas o campo de comando no Firebase
+            curl -s \
+                -X PATCH \
+                -H "Content-Type: application/json" \
+                -d "{
+                    \"id\":\"$ID_GERADO\",
+                    \"comando\":null,
+                    \"data_hora\":$TIMESTAMP_MS
+                }" \
+                "$FIREBASE_URL" \
+                > /dev/null 2>&1
+
+            continue
+        fi
     fi
 
     if [ -n "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
@@ -510,7 +484,6 @@ EOF
             -d "{
                 \"id\":\"$ID_GERADO\",
                 \"comando\":null,
-                \"data_hora\":$ID_GERADO\",
                 \"data_hora\":$TIMESTAMP_MS
             }" \
             "$FIREBASE_URL" \
@@ -519,6 +492,6 @@ EOF
         executar_stream "$CMD" "GERAL" &
     fi
 
-    sleep 0.5
+    sleep 1
 
 done
