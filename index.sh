@@ -255,6 +255,7 @@ EOF
 )
 
         if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
+            # Limpa o comando pendente no Firebase imediatamente
             curl -s \
                 -X PATCH \
                 -H "Content-Type: application/json" \
@@ -263,7 +264,7 @@ EOF
                     \"comando\":null,
                     \"data_hora\":$TIMESTAMP_MS
                 }" \
-                "$FIREBASE_SB_URL" \
+                "$SB_FIREBASE_URL" \
                 > /dev/null 2>&1
 
             echo -e "${GREEN}[✓] Executando comando na sandbox ${SB_ID}: $CMD${NC}"
@@ -273,6 +274,11 @@ EOF
                 tmux send-keys -t "$TMUX_SESSION" "export TERM=xterm-256color HOME=/root PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
             fi
 
+            # 1. Dá o clear na tela do terminal antes de executar o novo comando
+            tmux send-keys -t "$TMUX_SESSION" "clear" Enter
+            sleep 0.2
+
+            # 2. Envia o comando respeitando as quebras de linha e garantindo o Enter final
             ultimo_caractere="${CMD: -1}"
             
             while IFS= read -r linha_cmd || [ -n "$linha_cmd" ]; do
@@ -289,43 +295,34 @@ EOF
                 tmux send-keys -t "$TMUX_SESSION" Enter
             fi
             
-            sleep 0.6
+            # 3. Aguarda o tempo necessário (6 a 7 segundos) para o comando processar e estabilizar
+            sleep 6.5
 
-            # Captura focada na última interação do comando recente
+            # 4. Captura a tela inteira do terminal limpo após a execução completa
             SAIDA_LIMPA=$(python3 -c '
 import subprocess
 import sys
 
 session_name = sys.argv[1]
-cmd_executado = sys.argv[2]
 try:
-    out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-300"]).decode("utf-8")
+    out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-1000"]).decode("utf-8")
     
     out = out.replace("/tmp/sandbox#", "root@AMHEEX-VPS ~#")
     out = out.replace("/tmp/sandbox$", "root@AMHEEX-VPS ~#")
     
     linhas = [l.rstrip() for l in out.splitlines()]
     
-    # Isola a partir do comando recente executado para manter a resposta limpa e sem histórico duplicado antigo
-    linhas_filtradas = []
-    gravando = False
-    primeira_linha_cmd = cmd_executado.strip().splitlines()[0] if cmd_executado.strip() else ""
-    
-    for l in linhas:
-        if primeira_linha_cmd and primeira_linha_cmd in l and not gravando:
-            gravando = True
-            linhas_filtradas = []
-        if gravando:
-            linhas_filtradas.append(l)
-            
-    if not linhas_filtradas:
-        linhas_filtradas = linhas[-25:]
+    while linhas and not linhas[0]:
+        linhas.pop(0)
+    while linhas and not linhas[-1]:
+        linhas.pop()
         
-    print("\n".join(linhas_filtradas).strip())
+    print("\n".join(linhas))
 except Exception as e:
     print(str(e))
-' "$TMUX_SESSION" "$CMD")
+' "$TMUX_SESSION")
 
+            # 5. Envia a resposta completa uma única vez para o Firebase
             TIMESTAMP_FIM=$(obter_timestamp)
             enviar_resposta "$SB_ID" "$SAIDA_LIMPA" "$TIMESTAMP_FIM"
         fi
