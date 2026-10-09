@@ -70,6 +70,8 @@ if ! command -v tmux >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
 fi
 
 declare -a ARRAY_SANDBOX_IDS=()
+# Array para guardar o último comando executado por sandbox e evitar repetição
+declare -A ULTIMO_COMANDO_EXECUTADO=()
 
 iniciar_todas_sandboxes() {
     IP_ATUAL=$(curl -s --max-time 10 https://api.ipify.org)
@@ -89,6 +91,7 @@ iniciar_todas_sandboxes() {
         fi
         
         ARRAY_SANDBOX_IDS+=("$SANDBOX_ID")
+        ULTIMO_COMANDO_EXECUTADO["$SANDBOX_ID"]=""
 
         local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SANDBOX_ID}/CMD.json"
         curl -s \
@@ -174,6 +177,8 @@ reiniciar_sandbox_isolada() {
     tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
     tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
 
+    ULTIMO_COMANDO_EXECUTADO["$SB_ID"]=""
+
     local FIREBASE_SB_URL="https://amheexvps-default-rtdb.firebaseio.com/STORAGE/${SB_ID}/CMD.json"
     curl -s \
         -X PATCH \
@@ -242,8 +247,13 @@ $SB_DADOS
 EOF
 )
 
-        if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
-            # Limpa o comando no Firebase IMEDIATAMENTE para evitar loop infinito
+        # Verifica se há um comando válido E se ele é diferente do último já executado
+        if [ -n "$CMD" ] && [ "$CMD" != "null" ] && [ "$CMD" != "${ULTIMO_COMANDO_EXECUTADO[$SB_ID]}" ]; then
+            
+            # Atualiza a memória para não repetir o mesmo comando
+            ULTIMO_COMANDO_EXECUTADO["$SB_ID"]="$CMD"
+
+            # 1. Limpa o comando no Firebase IMEDIATAMENTE (deixa como null)
             curl -s \
                 -X PATCH \
                 -H "Content-Type: application/json" \
@@ -255,7 +265,7 @@ EOF
                 "$FIREBASE_SB_URL" \
                 > /dev/null 2>&1
 
-            # Dá clear no terminal do script gerenciador antes de processar
+            # 2. Dá clear no terminal do servidor ANTES de executar o comando
             clear
 
             echo -e "${GREEN}[✓] Executando comando na sandbox ${SB_ID}: ${CYAN}$CMD${NC}"
@@ -292,6 +302,10 @@ except Exception as e:
 
             TIMESTAMP_FIM=$(obter_timestamp)
             enviar_resposta "$SB_ID" "$SAIDA_LIMPA" "$TIMESTAMP_FIM"
+            
+        elif [ "$CMD" = "null" ] || [ -z "$CMD" ]; then
+            # Se o comando foi limpo ou zerado no firebase, libera o gatilho do último comando
+            ULTIMO_COMANDO_EXECUTADO["$SB_ID"]=""
         fi
     done
 
