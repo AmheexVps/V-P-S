@@ -289,43 +289,18 @@ EOF
             # Aguarda o comando processar no terminal
             sleep 0.5
 
-            # Captura completa sem limite de linhas e preservando formatação e quebras (Enter)
+            # Sem filtros: pega exatamente todo o histórico bruto do tmux sem restrições
             SAIDA_LIMPA=$(python3 -c '
 import subprocess
 import sys
 
 session_name = sys.argv[1]
-cmd_enviado = sys.argv[2]
 try:
     out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-1000"]).decode("utf-8")
-    linhas = out.splitlines()
-    
-    linhas_limpas = []
-    capturar = False
-    primeira_linha_encontrada = False
-
-    for l in linhas:
-        stripped = l.strip()
-        if not primeira_linha_encontrada and cmd_enviado in stripped:
-            primeira_linha_encontrada = True
-            capturar = True
-            continue
-        if capturar:
-            if "root@AMHEEX-VPS" in stripped and stripped.endswith("#"):
-                # Para de capturar ao encontrar o próximo prompt interativo do terminal
-                break
-            linhas_limpas.append(l)
-
-    if not linhas_limpas:
-        for l in linhas:
-            stripped = l.strip()
-            if stripped and "root@AMHEEX-VPS" not in stripped:
-                linhas_limpas.append(l)
-
-    print("\n".join(linhas_limpas))
+    print(out)
 except Exception as e:
     print(str(e))
-' "$TMUX_SESSION" "$CMD")
+' "$TMUX_SESSION")
 
             TIMESTAMP_FIM=$(obter_timestamp)
             enviar_resposta "$SB_ID" "$SAIDA_LIMPA" "$TIMESTAMP_FIM"
