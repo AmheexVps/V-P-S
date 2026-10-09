@@ -236,7 +236,7 @@ EOF
                 \"id\":\"$SB_ID\",
                 \"data_hora\":$TIMESTAMP_MS
             }" \
-            "$SB_FIREBASE_URL" \
+            "$FIREBASE_SB_URL" \
             > /dev/null 2>&1
 
         CMD=$(python3 -c '
@@ -264,7 +264,7 @@ EOF
                     \"comando\":null,
                     \"data_hora\":$TIMESTAMP_MS
                 }" \
-                "$SB_FIREBASE_URL" \
+                "$FIREBASE_SB_URL" \
                 > /dev/null 2>&1
 
             echo -e "${GREEN}[✓] Executando comando na sandbox ${SB_ID}: $CMD${NC}"
@@ -274,11 +274,7 @@ EOF
                 tmux send-keys -t "$TMUX_SESSION" "export TERM=xterm-256color HOME=/root PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
             fi
 
-            # 1. Dá o clear na tela do terminal antes de executar o novo comando
-            tmux send-keys -t "$TMUX_SESSION" "clear" Enter
-            sleep 0.2
-
-            # 2. Envia o comando respeitando as quebras de linha e garantindo o Enter final
+            # Envia o comando respeitando as quebras de linha e garantindo o Enter final
             ultimo_caractere="${CMD: -1}"
             
             while IFS= read -r linha_cmd || [ -n "$linha_cmd" ]; do
@@ -295,17 +291,17 @@ EOF
                 tmux send-keys -t "$TMUX_SESSION" Enter
             fi
             
-            # 3. Aguarda o tempo necessário (6 a 7 segundos) para o comando processar e estabilizar
+            # Aguarda o tempo necessário (6 a 7 segundos) para o comando processar e gerar a resposta
             sleep 6.5
 
-            # 4. Captura a tela inteira do terminal limpo após a execução completa
+            # Captura a saída mantendo o conteúdo estruturado sem apagar o histórico útil
             SAIDA_LIMPA=$(python3 -c '
 import subprocess
 import sys
 
 session_name = sys.argv[1]
 try:
-    out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-1000"]).decode("utf-8")
+    out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-300"]).decode("utf-8")
     
     out = out.replace("/tmp/sandbox#", "root@AMHEEX-VPS ~#")
     out = out.replace("/tmp/sandbox$", "root@AMHEEX-VPS ~#")
@@ -322,7 +318,7 @@ except Exception as e:
     print(str(e))
 ' "$TMUX_SESSION")
 
-            # 5. Envia a resposta completa uma única vez para o Firebase
+            # Envia a resposta completa para o Firebase
             TIMESTAMP_FIM=$(obter_timestamp)
             enviar_resposta "$SB_ID" "$SAIDA_LIMPA" "$TIMESTAMP_FIM"
         fi
