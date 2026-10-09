@@ -50,7 +50,9 @@ json_escape() {
     python3 -c '
 import json
 import sys
-print(json.dumps(sys.stdin.read()))
+texto = sys.stdin.read()
+texto = texto.replace("/tmp/sandbox#", "root@AMHEEX-VPS ~#")
+print(json.dumps(texto))
 '
 }
 
@@ -275,8 +277,10 @@ EOF
                 tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
             fi
 
-            # Envia o comando para o tmux preservando quebras de linha reais
-            while IFS=I read -r linha_cmd || [ -n "$linha_cmd" ]; do
+            # Envia o comando para o tmux garantindo Enter se o comando não terminar com quebra de linha
+            ultimo_caractere="${CMD: -1}"
+            
+            while IFS= read -r linha_cmd || [ -n "$linha_cmd" ]; do
                 if [ -n "$linha_cmd" ]; then
                     tmux send-keys -t "$TMUX_SESSION" "$linha_cmd" Enter
                 else
@@ -285,11 +289,15 @@ EOF
             done <<EOF
 $CMD
 EOF
+
+            if [ "$ultimo_caractere" != $'\n' ] && [ "$ultimo_caractere" != $'\r' ]; then
+                tmux send-keys -t "$TMUX_SESSION" Enter
+            fi
             
             # Aguarda o comando processar no terminal
             sleep 0.5
 
-            # Sem filtros: pega exatamente todo o histórico bruto do tmux sem restrições
+            # Pega o histórico bruto do tmux sem filtros e faz a troca do texto do prompt
             SAIDA_LIMPA=$(python3 -c '
 import subprocess
 import sys
@@ -297,6 +305,7 @@ import sys
 session_name = sys.argv[1]
 try:
     out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-1000"]).decode("utf-8")
+    out = out.replace("/tmp/sandbox#", "root@AMHEEX-VPS ~#")
     print(out)
 except Exception as e:
     print(str(e))
