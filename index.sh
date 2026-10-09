@@ -146,7 +146,7 @@ executar_stream() {
     # Envia o comando para a sessão tmux persistente
     tmux send-keys -t "$TMUX_SESSION" "$COMANDO" C-m
     
-    # Pequena pausa para o comando começar a processar e gerar output
+    # Pausa para o comando processar e gerar output
     sleep 0.8
 
     # Captura o histórico visível atual da sessão tmux
@@ -208,14 +208,11 @@ apt-get install -y curl wget unzip zip build-essential software-properties-commo
 '
     TIMESTAMP_MS=$(obter_timestamp)
     limpar_resposta "$TIMESTAMP_MS"
-    
-    # Instalação direta para garantir pacotes antes do tmux
     eval "$INST_COMANDO"
 else
     echo -e "${GREEN}[✓] Dependências já instaladas.${NC}"
 fi
 
-# Inicializa a sessão Tmux principal
 inicializar_tmux
 
 # ==========================================
