@@ -76,8 +76,8 @@ enviar_resposta() {
     JSON_TEXTO=$(printf '%s' "$TEXTO" | json_escape)
 
     curl -s \
-        --connect-timeout 5 \
-        --max-time 15 \
+        --connect-timeout 2 \
+        --max-time 5 \
         -X PATCH \
         -H "Content-Type: application/json" \
         -d "{
@@ -97,8 +97,8 @@ limpar_resposta() {
     local TIMESTAMP="$1"
 
     curl -s \
-        --connect-timeout 5 \
-        --max-time 15 \
+        --connect-timeout 2 \
+        --max-time 5 \
         -X PATCH \
         -H "Content-Type: application/json" \
         -d "{
@@ -122,11 +122,9 @@ forcar_limpeza_total() {
     DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
     enviar_resposta "[$DATA_HORA] [SISTEMA: $MOTIVO - Interrompendo execuções e limpando workspace...]" "$TIMESTAMP"
 
-    # Mata qualquer processo filho rodando
     pkill -P $$ 2>/dev/null
     jobs -p | xargs kill -9 2>/dev/null
 
-    # Limpa de vez o workspace
     rm -rf "$VM_WORKSPACE"
     mkdir -p "$VM_WORKSPACE"
     echo "$VM_WORKSPACE" > "$DIR_FILE"
@@ -201,7 +199,6 @@ executar_stream() {
         DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
         SAIDA="[$DATA_HORA] $LINHA"
         BUFFER+="$SAIDA"$'\n'
-        printf '%s\n' "$SAIDA"
         
         TIMESTAMP=$(obter_timestamp)
         enviar_resposta "$BUFFER" "$TIMESTAMP"
@@ -278,13 +275,13 @@ echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
 echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
 echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
 echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos em tempo real...${NC}"
+echo -e "${GREEN}     [✓] Monitorando comandos em tempo real (100ms)...${NC}"
 echo ""
 
 WORKSPACE_LIMPO=false
 
 # ==========================================
-# LOOP PRINCIPAL
+# LOOP PRINCIPAL (100ms)
 # ==========================================
 while true; do
     TIMESTAMP_MS=$(obter_timestamp)
@@ -319,7 +316,6 @@ EOF
     IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
     if [ "$ACTION_VAL" = "FALSE" ]; then
-        echo -e "\n${RED}[!] Script desativado via Firebase.${NC}"
         forcar_limpeza_total "DESATIVADO VIA FIREBASE"
         
         TIMESTAMP_MS=$(obter_timestamp)
@@ -334,14 +330,11 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
-        echo -e "${GREEN}[✓] Workspace limpo.${NC}"
-        echo -e "${GREEN}[✓] Encerrando.${NC}"
         exit 0
     fi
 
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
         if [ "$WORKSPACE_LIMPO" = "false" ]; then
-            echo -e "\n${YELLOW}[!] Tempo expirado. Forçando interrupção e limpeza do workspace...${NC}"
             forcar_limpeza_total "TEMPO EXPIRADO"
             WORKSPACE_LIMPO=true
         fi
@@ -349,18 +342,8 @@ EOF
         WORKSPACE_LIMPO=false
     fi
 
-    curl -s \
-        -X PATCH \
-        -H "Content-Type: application/json" \
-        -d "{
-            \"id\":\"$ID_GERADO\",
-            \"data_hora\":$TIMESTAMP_MS
-        }" \
-        "$FIREBASE_URL" \
-        > /dev/null 2>&1
-
     if [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
-        sleep 1
+        sleep 0.1
         continue
     fi
 
@@ -371,7 +354,7 @@ try:
     data = json.loads(sys.stdin.read())
     val = data.get("comando", "")
     if val:
-        print(val.replace("\\n", "\n"))
+        print(val)
 except:
     pass
 ' <<EOF
@@ -386,7 +369,7 @@ try:
     data = json.loads(sys.stdin.read())
     val = data.get("cmd_ubuntu", "")
     if val:
-        print(val.replace("\\n", "\n"))
+        print(val)
 except:
     pass
 ' <<EOF
@@ -395,13 +378,6 @@ EOF
 )
 
     if [ -n "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
-        echo ""
-        echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║               NOVO COMANDO UBUNTU                       ║${NC}"
-        echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
-        echo -e "${WHITE}$CMD_UBUNTU${NC}"
-        echo ""
-
         TIMESTAMP_MS=$(obter_timestamp)
         limpar_resposta "$TIMESTAMP_MS"
 
@@ -417,16 +393,10 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
+        echo -e "${GREEN}[✓] Comando Ubuntu executado com sucesso.${NC}"
         executar_stream "$CMD_UBUNTU" "UBUNTU" &
 
     elif [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
-        echo ""
-        echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║                  NOVO COMANDO                           ║${NC}"
-        echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
-        echo -e "${WHITE}$CMD${NC}"
-        echo ""
-
         TIMESTAMP_MS=$(obter_timestamp)
         limpar_resposta "$TIMESTAMP_MS"
 
@@ -441,9 +411,11 @@ EOF
             "$FIREBASE_URL" \
             > /dev/null 2>&1
 
+        echo -e "${GREEN}[✓] Comando executado com sucesso.${NC}"
         executar_stream "$CMD" "GERAL" &
     fi
 
-    sleep 1
+    # Pausa ultrarrápida de 100ms por ciclo
+    sleep 0.1
 
 done
