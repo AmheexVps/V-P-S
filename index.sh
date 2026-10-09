@@ -122,14 +122,11 @@ forcar_limpeza_total() {
     
     enviar_resposta "[SISTEMA: $MOTIVO - Encerrando sessão tmux e limpando arquivos...]" "$TIMESTAMP"
 
-    # Destroi a sessão tmux
     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
 
-    # Mata processos filhos
     pkill -P $$ 2>/dev/null
     jobs -p | xargs kill -9 2>/dev/null
 
-    # Remove todos os arquivos do workspace e sandbox de vez
     rm -rf "$VM_WORKSPACE"
     rm -rf "$SANDBOX_DIR"
 }
@@ -143,9 +140,10 @@ if ! command -v tmux >/dev/null 2>&1; then
     apt-get update -y && apt-get install -y tmux >/dev/null 2>&1
 fi
 
-# Garante que a sessão tmux existe e continua viva (se já existir, não destrói)
 if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
+    # Oculta o prompt do bash dentro da sessão do tmux para não poluir as capturas
+    tmux send-keys -t "$TMUX_SESSION" "PS1=''" Enter
 fi
 
 # ==========================================
@@ -222,7 +220,6 @@ EOF
 
     IFS=',' read -r ACTION_VAL EXPIRATION_VAL <<< "$PARSED_VALS"
 
-    # Se action for FALSE ou o tempo tiver expirado, limpa tudo e encerra
     if [ "$ACTION_VAL" = "FALSE" ] || [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ]; then
         MOTIVO="DESATIVADO VIA FIREBASE"
         [ "$TIMESTAMP_MS" -ge "$EXPIRATION_VAL" ] && MOTIVO="TEMPO EXPIRADO"
@@ -245,7 +242,6 @@ EOF
         exit 0
     fi
 
-    # Atualiza o data_hora a cada ciclo no loop principal
     curl -s \
         -X PATCH \
         -H "Content-Type: application/json" \
@@ -275,7 +271,6 @@ EOF
         TIMESTAMP_MS=$(obter_timestamp)
         limpar_resposta "$TIMESTAMP_MS"
 
-        # Limpa o comando no Firebase imediatamente
         curl -s \
             -X PATCH \
             -H "Content-Type: application/json" \
@@ -291,14 +286,14 @@ EOF
 
         if ! tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
             tmux new-session -d -s "$TMUX_SESSION" -c "$VM_WORKSPACE"
+            tmux send-keys -t "$TMUX_SESSION" "PS1=''" Enter
         fi
 
-        # Envia o comando para a sessão tmux
         tmux send-keys -t "$TMUX_SESSION" "$CMD" Enter
         
         sleep 0.3
 
-        # Captura o painel e limpa os prompts mantendo o resultado puro
+        # Filtra rigorosamente para remover qualquer rastro de path, prompt ou comando ecoado
         SAIDA_LIMPA=$(python3 -c '
 import subprocess
 import re
@@ -309,7 +304,9 @@ try:
     
     linhas_limpas = []
     for l in linhas:
-        if re.match(r"^(/tmp/sandbox#|root@.*#)\s*$", l.strip()):
+        stripped = l.strip()
+        # Ignora linhas que contenham caminhos de sandbox ou prompts do sistema
+        if "/tmp/sandbox#" in stripped or "root@" in stripped or not stripped:
             continue
         linhas_limpas.append(l)
         
