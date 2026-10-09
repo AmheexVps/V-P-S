@@ -18,6 +18,7 @@ NC='\033[0m'
 SANDBOX_DIR="$HOME/.sandbox"
 VM_WORKSPACE="/tmp/sandbox"
 DIR_FILE="$SANDBOX_DIR/current_dir"
+SESSION_FIFO="$SANDBOX_DIR/session_fifo"
 
 mkdir -p "$SANDBOX_DIR"
 mkdir -p "$VM_WORKSPACE"
@@ -25,6 +26,10 @@ mkdir -p "$VM_WORKSPACE"
 if [ ! -f "$DIR_FILE" ]; then
     echo "$VM_WORKSPACE" > "$DIR_FILE"
 fi
+
+# Cria o canal de comunicação para o terminal real
+rm -f "$SESSION_FIFO"
+mkfifo "$SESSION_FIFO"
 
 # ==========================================
 # IDENTIFICAÇÃO
@@ -130,90 +135,6 @@ forcar_limpeza_total() {
     echo "$VM_WORKSPACE" > "$DIR_FILE"
 }
 
-# ------------------------------------------
-# EXECUTA COMANDO COM SUPORTE A CD, CLEAR, EXIT
-# ------------------------------------------
-executar_stream() {
-    local COMANDO="$1"
-    local TIPO="$2"
-
-    local BUFFER=""
-    local TIMESTAMP
-    local DATA_HORA
-    local LINHA
-    local SAIDA
-    local DIR_ATUAL
-
-    DIR_ATUAL=$(cat "$DIR_FILE")
-    if [ ! -d "$DIR_ATUAL" ]; then
-        DIR_ATUAL="$VM_WORKSPACE"
-        echo "$VM_WORKSPACE" > "$DIR_FILE"
-    fi
-
-    # Tratamento para o comando CLEAR
-    if [ "$COMANDO" = "clear" ]; then
-        TIMESTAMP=$(obter_timestamp)
-        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-        enviar_resposta "[$DATA_HORA] [Terminal limpo]" "$TIMESTAMP"
-        return 0
-    fi
-
-    # Tratamento para EXIT / EXITE
-    if [ "$COMANDO" = "exit" ] || [ "$COMANDO" = "exite" ]; then
-        TIMESTAMP=$(obter_timestamp)
-        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-        enviar_resposta "[$DATA_HORA] [Sessão de comando encerrada]" "$TIMESTAMP"
-        return 0
-    fi
-
-    # Tratamento para o comando CD
-    if [[ "$COMANDO" =~ ^cd[[:space:]]*$ ]]; then
-        DIR_ATUAL="$VM_WORKSPACE"
-        echo "$VM_WORKSPACE" > "$DIR_FILE"
-        TIMESTAMP=$(obter_timestamp)
-        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-        enviar_resposta "[$DATA_HORA] Diretório atual: $DIR_ATUAL" "$TIMESTAMP"
-        return 0
-    elif [[ "$COMANDO" =~ ^cd[[:space:]]+(.*)$ ]]; then
-        local DESTINO="${BASH_REMATCH[1]}"
-        local NOVO_DIR
-        NOVO_DIR=$(cd "$DIR_ATUAL" && eval "cd $DESTINO" && pwd)
-        
-        TIMESTAMP=$(obter_timestamp)
-        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-        if [ $? -eq 0 ] && [ -d "$NOVO_DIR" ]; then
-            echo "$NOVO_DIR" > "$DIR_FILE"
-            enviar_resposta "[$DATA_HORA] Diretório atual: $NOVO_DIR" "$TIMESTAMP"
-        else
-            enviar_resposta "[$DATA_HORA] cd: $DESTINO: No such file or directory" "$TIMESTAMP"
-        fi
-        return 0
-    fi
-
-    local TEM_SAIDA=false
-
-    # Execução normal dos comandos mantendo o diretório atual
-    while IFS= read -r LINHA || [ -n "$LINHA" ]; do
-        TEM_SAIDA=true
-        LINHA="${LINHA%$'\r'}"
-        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-        SAIDA="[$DATA_HORA] $LINHA"
-        BUFFER+="$SAIDA"$'\n'
-        
-        TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "$BUFFER" "$TIMESTAMP"
-    done < <(cd "$DIR_ATUAL" && stdbuf -oL -eL bash -c "$COMANDO" 2>&1)
-
-    if [ "$TEM_SAIDA" = "false" ]; then
-        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
-        SAIDA="[$DATA_HORA] [Concluído / Sem retorno impresso]"
-        TIMESTAMP=$(obter_timestamp)
-        enviar_resposta "$SAIDA" "$TIMESTAMP"
-    fi
-
-    return 0
-}
-
 # ==========================================
 # AMBIENTE
 # ==========================================
@@ -241,26 +162,6 @@ curl -s \
     > /dev/null 2>&1
 
 # ==========================================
-# INSTALAÇÃO DE DEPENDÊNCIAS
-# ==========================================
-if ! command -v node >/dev/null 2>&1 || \
-   ! command -v python3 >/dev/null 2>&1; then
-
-    echo -e "${YELLOW}[*] Dependências ausentes.${NC}"
-    echo -e "${YELLOW}[*] Instalação iniciada.${NC}"
-
-    INST_COMANDO='
-apt-get update -y &&
-apt-get install -y curl wget unzip zip build-essential software-properties-common apt-transport-https ca-certificates gnupg lsb-release python3 python3-pip python3-dev nodejs npm jq net-tools iputils-ping nano screen tmux
-'
-    TIMESTAMP_MS=$(obter_timestamp)
-    limpar_resposta "$TIMESTAMP_MS"
-    executar_stream "$INST_COMANDO" "INSTALACAO"
-else
-    echo -e "${GREEN}[✓] Dependências já instaladas.${NC}"
-fi
-
-# ==========================================
 # INTERFACE VISUAL
 # ==========================================
 clear
@@ -275,7 +176,7 @@ echo -e "${WHITE}     🔹 IP Público : ${CYAN}$IP_ATUAL${NC}"
 echo -e "${WHITE}     🔹 ID Firebase: ${CYAN}$ID_GERADO${NC}"
 echo -e "${WHITE}     🔹 URL Status : ${CYAN}$FIREBASE_URL${NC}"
 echo ""
-echo -e "${GREEN}     [✓] Monitorando comandos em tempo real (100ms)...${NC}"
+echo -e "${GREEN}     [✓] Terminal interativo pronto (100ms)...${NC}"
 echo ""
 
 WORKSPACE_LIMPO=false
@@ -362,44 +263,11 @@ $DADOS
 EOF
 )
 
-    CMD_UBUNTU=$(python3 -c '
-import json
-import sys
-try:
-    data = json.loads(sys.stdin.read())
-    val = data.get("cmd_ubuntu", "")
-    if val:
-        print(val)
-except:
-    pass
-' <<EOF
-$DADOS
-EOF
-)
-
-    if [ -n "$CMD_UBUNTU" ] && [ "$CMD_UBUNTU" != "null" ]; then
+    if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
         TIMESTAMP_MS=$(obter_timestamp)
         limpar_resposta "$TIMESTAMP_MS"
 
-        curl -s \
-            -X PATCH \
-            -H "Content-Type: application/json" \
-            -d "{
-                \"id\":\"$ID_GERADO\",
-                \"comando\":null,
-                \"cmd_ubuntu\":null,
-                \"data_hora\":$TIMESTAMP_MS
-            }" \
-            "$FIREBASE_URL" \
-            > /dev/null 2>&1
-
-        echo -e "${GREEN}[✓] Comando Ubuntu executado com sucesso.${NC}"
-        executar_stream "$CMD_UBUNTU" "UBUNTU" &
-
-    elif [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
-        TIMESTAMP_MS=$(obter_timestamp)
-        limpar_resposta "$TIMESTAMP_MS"
-
+        # Limpa o comando no Firebase imediatamente
         curl -s \
             -X PATCH \
             -H "Content-Type: application/json" \
@@ -412,10 +280,19 @@ EOF
             > /dev/null 2>&1
 
         echo -e "${GREEN}[✓] Comando executado com sucesso.${NC}"
-        executar_stream "$CMD" "GERAL" &
+
+        # Executa o comando simulando o Enter nativo e captura a saída para o Firebase
+        DIR_ATUAL=$(cat "$DIR_FILE")
+        [ ! -d "$DIR_ATUAL" ] && DIR_ATUAL="$VM_WORKSPACE"
+
+        SAIDA=$(cd "$DIR_ATUAL" && bash -c "$CMD" 2>&1)
+        DATA_HORA=$(date '+%Y-%m-%d %H:%M:%S')
+        RESULTADO="[$DATA_HORA] $SAIDA"
+        
+        TIMESTAMP_MS=$(obter_timestamp)
+        enviar_resposta "$RESULTADO" "$TIMESTAMP_MS"
     fi
 
-    # Pausa ultrarrápida de 100ms por ciclo
     sleep 0.1
 
 done
