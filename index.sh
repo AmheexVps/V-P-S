@@ -64,7 +64,6 @@ if ! command -v tmux >/dev/null 2>&1; then
     apt-get update -y && apt-get install -y tmux >/dev/null 2>&1
 fi
 
-# Arrays globais para rastrear os IDs fixos e sessões individualmente
 declare -a ARRAY_SANDBOX_IDS=()
 
 # ==========================================
@@ -159,7 +158,6 @@ enviar_resposta() {
         > /dev/null 2>&1
 }
 
-# Reseta APENAS a sandbox específica MANTENDO O MESMO ID e definindo expiration 0
 reiniciar_sandbox_isolada() {
     local INDEX="$1"
     local SB_ID="${ARRAY_SANDBOX_IDS[$INDEX]}"
@@ -169,7 +167,7 @@ reiniciar_sandbox_isolada() {
     
     local TMUX_SESSION="sandbox_ubuntu_$SB_NUM"
 
-    echo -e "\n${YELLOW}[!] Sandbox $SB_NUM ($SB_ID) expirou. Resetando e aguardando novo expiration...${NC}"
+    echo -e "\n${YELLOW}[!] Sandbox $SB_NUM ($SB_ID) expirou. Resetando...${NC}"
 
     if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
         tmux kill-session -t "$TMUX_SESSION" 2>/dev/null
@@ -193,7 +191,6 @@ reiniciar_sandbox_isolada() {
         > /dev/null 2>&1
 }
 
-# Inicializa todas as sandboxes com IDs fixos no começo
 iniciar_todas_sandboxes
 
 # ==========================================
@@ -258,7 +255,6 @@ EOF
 )
 
         if [ -n "$CMD" ] && [ "$CMD" != "null" ]; then
-            # Limpa o comando pendente no Firebase imediatamente
             curl -s \
                 -X PATCH \
                 -H "Content-Type: application/json" \
@@ -277,7 +273,7 @@ EOF
                 tmux send-keys -t "$TMUX_SESSION" "export PS1='root@AMHEEX-VPS-$SB_NUM ~# '" Enter
             fi
 
-            # Envia o comando para o tmux garantindo Enter se o comando não terminar com quebra de linha
+            # Envia o comando respeitando as linhas e garantindo o Enter final
             ultimo_caractere="${CMD: -1}"
             
             while IFS= read -r linha_cmd || [ -n "$linha_cmd" ]; do
@@ -295,9 +291,9 @@ EOF
             fi
             
             # Aguarda o comando processar no terminal
-            sleep 0.5
+            sleep 0.6
 
-            # Pega o histórico bruto do tmux sem filtros e faz a troca do texto do prompt
+            # Captura a tela do tmux limpa e trata os caminhos do prompt
             SAIDA_LIMPA=$(python3 -c '
 import subprocess
 import sys
@@ -305,8 +301,19 @@ import sys
 session_name = sys.argv[1]
 try:
     out = subprocess.check_output(["tmux", "capture-pane", "-t", session_name, "-p", "-S", "-1000"]).decode("utf-8")
+    
+    # Substituições corretas para manter o padrão visual limpo
     out = out.replace("/tmp/sandbox#", "root@AMHEEX-VPS ~#")
-    print(out)
+    out = out.replace("/tmp/sandbox$", "root@AMHEEX-VPS ~#")
+    
+    # Remove linhas vazias excessivas no topo ou base se houver
+    linhas = [l.rstrip() for l in out.splitlines()]
+    while linhas and not linhas[0]:
+        linhas.pop(0)
+    while linhas and not linhas[-1]:
+        linhas.pop()
+        
+    print("\n".join(linhas))
 except Exception as e:
     print(str(e))
 ' "$TMUX_SESSION")
