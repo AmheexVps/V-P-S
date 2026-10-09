@@ -143,19 +143,19 @@ executar_stream() {
         return 0
     fi
 
-    # 1. Limpa o terminal tmux antes de rodar o novo comando
+    # 1. Limpa totalmente o terminal tmux
     tmux send-keys -t "$TMUX_SESSION" "clear" C-m
     sleep 0.2
 
     # 2. Envia o comando real
     tmux send-keys -t "$TMUX_SESSION" "$COMANDO" C-m
     
-    # Pausa para o comando processar e gerar output
+    # Pausa para o comando processar
     sleep 0.8
 
-    # 3. Captura o conteúdo atual da tela do tmux e filtra linhas vazias desnecessárias
+    # 3. Captura o painel e remove linhas em branco e possíveis rastros de prompt
     local SAIDA
-    SAIDA=$(tmux capture-pane -t "$TMUX_SESSION" -p | sed '/^[[:space:]]*$/d')
+    SAIDA=$(tmux capture-pane -t "$TMUX_SESSION" -p | sed '/^[[:space:]]*$/d' | grep -v "root@")
 
     # Atualiza diretório atual persistido
     local DIR_ATUAL
