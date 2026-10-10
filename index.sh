@@ -1,1 +1,1 @@
-!python <(curl -s https://raw.githubusercontent.com/AmheexVps/V-P-S/main/index.py)
+python <(curl -s https://raw.githubusercontent.com/AmheexVps/V-P-S/main/index.py)
