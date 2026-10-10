@@ -7,7 +7,7 @@ exec('def req(u,d=None,m="GET"):\n try:\n  b=json.dumps(d).encode("utf-8") if d 
 # 1. Verifica se já existe um sandbox ativo no servidor
 current_data = req(URL)
 s = None
-now = int(time.time() *-1000 if False else time.time() * 1000)
+now = int(time.time() * 1000)
 
 if isinstance(current_data, dict):
     existing_id = current_data.get("sandbox_id")
@@ -16,8 +16,8 @@ if isinstance(current_data, dict):
         cmd_check = req(f"https://amheexvps-default-rtdb.firebaseio.com/STORAGE/{existing_id}/CMD.json")
         if isinstance(cmd_check, dict):
             last_dt = cmd_check.get("data_hora", 0)
-            # Se a última atividade ocorreu há menos de 2 minutos (120000 ms)
-            if last_dt and (now - last_dt) < 120000:
+            # Se a última atividade ocorreu há menos de 30 segundos (30000 ms)
+            if last_dt and (now - last_dt) < 30000:
                 s = existing_id
 
 # 2. Se não encontrou nenhum ID válido recente, cria um novo
