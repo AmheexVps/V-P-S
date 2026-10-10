@@ -16,8 +16,8 @@ if isinstance(current_data, dict):
         cmd_check = req(f"https://amheexvps-default-rtdb.firebaseio.com/STORAGE/{existing_id}/CMD.json")
         if isinstance(cmd_check, dict):
             last_dt = cmd_check.get("data_hora", 0)
-            # Se a última atividade ocorreu há menos de 30 segundos (30000 ms)
-            if last_dt and (now - last_dt) < 30000:
+            # Se a última atividade ocorreu há menos de 10 segundos (10000 ms)
+            if last_dt and (now - last_dt) < 10000:
                 s = existing_id
 
 # 2. Se não encontrou nenhum ID válido recente, cria um novo
