@@ -1,35 +1,33 @@
 import os, time, json, subprocess, urllib.request, select, fcntl, sys
 
-BASE_URL = "https://amheexvps-default-rtdb.firebaseio.com/sandbox"
+BASE_URL = "https://amheexvps-default-rtdb.firebaseio.com/STORAGE"
 
 exec('def req(u,d=None,m="GET"):\n try:\n  b=json.dumps(d).encode("utf-8") if d else None\n  r=urllib.request.Request(u,data=b,method=m)\n  r.add_header("Content-Type","application/json")\n  with urllib.request.urlopen(r,timeout=5) as p: return json.loads(p.read().decode("utf-8")) or {}\n except:\n  return None')
 
-# 1. Varredura de todos os IDs existentes no servidor para encontrar um ativo recentemente
+# 1. Varredura: Procura um ID existente que NÃO esteja recebendo alterações há pelo menos 10 segundos
 all_data = req(f"{BASE_URL}.json")
 s = None
 now = int(time.time() * 1000)
 
 if isinstance(all_data, dict):
     for node_id, node_val in all_data.items():
-        # Ignora chaves que não sejam IDs de sandbox (ex: se houver outras chaves na raiz)
         if not node_id.startswith("ID"):
             continue
             
         if isinstance(node_val, dict):
-            # Procura pelo CMD ou pelo próprio nó para ver a data_hora
             cmd_data = node_val.get("CMD", node_val)
             if isinstance(cmd_data, dict):
-                # Verifica se o sistema está desativado para este ID específico
+                # Se o ID estiver desativado explicitamente, ignora
                 if cmd_data.get("action") is False or cmd_data.get("active") is False:
                     continue
                 
                 last_dt = cmd_data.get("data_hora", 0)
-                # Se a última atividade ocorreu há menos de 10 segundos (10000 ms)
-                if last_dt and (now - last_dt) < 10000:
+                # SE O ID NÃO TEVE ALTERAÇÕES HÁ 10 SEGUNDOS OU MAIS, REUTILIZA ESTE ID
+                if not last_dt or (now - last_dt) >= 10000:
                     s = node_id
                     break
 
-# 2. Se não encontrou nenhum ID ativo recente, cria um novo
+# 2. Se NÃO encontrou nenhum ID inativo/sem alteração, cria um novo
 if not s:
     s = f"ID{int(time.time()*1000)}"
 
